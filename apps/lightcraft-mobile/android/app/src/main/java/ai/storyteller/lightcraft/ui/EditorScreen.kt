@@ -69,7 +69,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
@@ -115,17 +114,12 @@ fun EditorScreen(vm: AppViewModel, ed: EditorState, snackbar: SnackbarHostState)
                     }
                 }
             } else {
-                val density = LocalDensity.current
-                val peek = with(density) { SheetPeek.toPx() }
-                val full = with(density) { (maxHeight * 0.6f).toPx() }.coerceAtLeast(peek)
-                // a new panel starts at the peek height
-                val limit = remember(peek, full, ed.tool, ed.section, ed.sub) { SheetLimit(peek, full) }
                 Column(Modifier.fillMaxSize()) {
                     StatusStrip()
                     EditorTopBar(vm, ed, createPreset, onExport, Modifier.windowInsetsPadding(horizontalInsets))
                     PhotoView(vm, ed, Modifier.weight(1f).fillMaxWidth())
-                    CompositionLocalProvider(LocalSheetLimit provides limit) {
-                        Column(Modifier.fillMaxWidth().background(Lc.bar).windowInsetsPadding(horizontalInsets).nestedScroll(limit.connection)) {
+                    CompositionLocalProvider(LocalSheetLimit provides SheetPeek) {
+                        Column(Modifier.fillMaxWidth().background(Lc.bar).windowInsetsPadding(horizontalInsets)) {
                             BottomArea(vm, ed)
                         }
                     }
@@ -159,7 +153,7 @@ fun StatusStrip() = Spacer(Modifier.fillMaxWidth().background(Lc.statusBar).wind
 @Composable
 fun NavStrip() = Spacer(Modifier.fillMaxWidth().background(Lc.navBar).windowInsetsBottomHeight(WindowInsets.navigationBars))
 
-/** Upright: the open tool's panel (sized to its content, see [SheetLimit]), then the rows. */
+/** Upright: the open tool's panel (sized to its content up to [SheetPeek], scrolling inside), then the rows. */
 @Composable
 private fun BottomArea(vm: AppViewModel, ed: EditorState) {
     val sheet = Modifier.fillMaxWidth()
@@ -213,7 +207,8 @@ private fun SideArea(vm: AppViewModel, ed: EditorState) {
                 NavStrip()
             }
             ed.tool == MainTool.EDIT && section != null -> SectionSheet(vm, ed, section, panel)
-            ed.tool == MainTool.MASKING -> MaskSheet(vm, ed, panel)
+            // no mask open: no panel, as there's no sheet upright; the photo takes the room
+            ed.tool == MainTool.MASKING && ed.masks.any { it.id == ed.selectedMask } -> MaskSheet(vm, ed, panel)
             ed.tool == MainTool.PRESETS -> PresetsSheet(vm, ed, panel)
             ed.tool == MainTool.ACTIONS && ed.action == QuickAction.RATE -> RateSheet(vm, ed, panel)
         }

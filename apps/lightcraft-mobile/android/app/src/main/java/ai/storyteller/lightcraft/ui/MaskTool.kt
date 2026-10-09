@@ -14,6 +14,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -225,7 +226,8 @@ fun MaskSheet(vm: AppViewModel, ed: EditorState, modifier: Modifier) {
                     item(key = "parts") { MaskParts(ed, mask) }
                     item(key = "kind") { MaskShapeControls(vm, ed, mask) }
                     item(key = "actions") {
-                        Row(Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // wrapped onto a second line when the panel is narrow (sideways)
+                        FlowRow(Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             PanelButton("Invert", LcIcon.Invert, active = mask.invert) { vm.maskCommand("mask.invert") }
                             PanelButton("Duplicate", LcIcon.Versions) { vm.maskCommand("mask.duplicate") }
                             PanelButton("Delete", LcIcon.Trash) { vm.maskCommand("mask.delete") }

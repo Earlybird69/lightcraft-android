@@ -15,6 +15,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -43,9 +44,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -62,11 +61,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -75,59 +70,25 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlin.math.min
 
 /** The colour mixer's eight bands, as the engine names them. */
 val bandIds = listOf("red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta")
 
-/** A slider list's height at first, as the reference app's sheet: about two and a half sliders under the buttons. */
+/**
+ * A slider list's height upright, as the reference app's sheet: about two and a half sliders under
+ * the buttons. The sheet stays this tall; a longer list scrolls inside it (the reference's lists are
+ * scroll views in a sheet of fixed height), so pulling it up moves the sliders, not the sheet.
+ */
 val SheetPeek = 184.dp
 
-/**
- * How tall a panel's list may be, in px: [peek] at first; pulling the list up raises it to [full],
- * pushing it down at its top lowers it again.
- */
-@Stable
-class SheetLimit(private val peek: Float, private val full: Float) {
-    var max by mutableFloatStateOf(peek)
-        private set
+/** The editor's sheet height upright; none (sideways, beside the photo): lists fill the panel. */
+val LocalSheetLimit = staticCompositionLocalOf<Dp?> { null }
 
-    /** How far the sheet has been raised. */
-    val raised: Float get() = max - peek
-
-    /** The list's height when last laid out: shorter than [max], it shows everything and there's nothing to pull up. */
-    var listHeight = 0
-
-    val connection = object : NestedScrollConnection {
-        override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-            // finger moving up: raise the sheet first, then the list scrolls
-            if (available.y >= 0f || listHeight < max - 1f) return Offset.Zero
-            val grow = min(-available.y, full - max)
-            if (grow <= 0f) return Offset.Zero
-            max += grow
-            return Offset(0f, -grow)
-        }
-
-        override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-            // finger moving down with the list at its top: lower the sheet
-            if (available.y <= 0f) return Offset.Zero
-            val shrink = min(available.y, max - peek)
-            if (shrink <= 0f) return Offset.Zero
-            max -= shrink
-            return Offset(0f, shrink)
-        }
-    }
-}
-
-/** The editor's sheet limit; none (sideways, beside the photo): lists fill the panel. */
-val LocalSheetLimit = staticCompositionLocalOf<SheetLimit?> { null }
-
-/** A list sized to its content up to the sheet's limit, or filling the panel when there's none. */
+/** A list sized to its content up to the sheet's height, or filling the panel when there's none. */
 @Composable
 fun Modifier.sheetList(): Modifier {
-    val limit = LocalSheetLimit.current ?: return fillMaxSize()
-    val max = with(LocalDensity.current) { limit.max.toDp() }
-    return fillMaxWidth().heightIn(max = max).onSizeChanged { limit.listHeight = it.height }
+    val max = LocalSheetLimit.current ?: return fillMaxSize()
+    return fillMaxWidth().heightIn(max = max)
 }
 
 /** A row of a panel: a slider (by control id) or a sub-title, in the order the desktop lists them. */
@@ -221,9 +182,17 @@ private fun CurvePanel(vm: AppViewModel, ed: EditorState) {
     val curve = ed.curve
     PanelList(vm, ed, listOf(SliderRow("curve.refineSaturation"))) {
         item(key = "presets") {
-            LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(curve?.presets.orEmpty(), key = { it }) { name -> PanelButton(name, active = name == curve?.preset) { vm.applyCurvePreset(name) } }
-                item(key = "reset") { PanelButton("Reset channel", LcIcon.Undo) { vm.resetCurveChannel() } }
+            if (LocalSheetLimit.current == null) {
+                // sideways the panel is narrow: the buttons wrap instead of running off its edge
+                FlowRow(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    curve?.presets.orEmpty().forEach { name -> PanelButton(name, active = name == curve?.preset) { vm.applyCurvePreset(name) } }
+                    PanelButton("Reset channel", LcIcon.Undo) { vm.resetCurveChannel() }
+                }
+            } else {
+                LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(curve?.presets.orEmpty(), key = { it }) { name -> PanelButton(name, active = name == curve?.preset) { vm.applyCurvePreset(name) } }
+                    item(key = "reset") { PanelButton("Reset channel", LcIcon.Undo) { vm.resetCurveChannel() } }
+                }
             }
         }
     }
@@ -686,17 +655,10 @@ fun PresetsSheet(vm: AppViewModel, ed: EditorState, modifier: Modifier) {
     }
 }
 
-/** Preset and profile previews: a grid, 226 dp at first (the reference app's strip), raised with the sheet. */
+/** Preset and profile previews: a grid, 226 dp tall upright (the reference app's strip), scrolling inside. */
 @Composable
 private fun LookGrid(modifier: Modifier, content: LazyGridScope.() -> Unit) {
-    val limit = LocalSheetLimit.current
-    val size = if (limit == null) {
-        Modifier.fillMaxSize()
-    } else {
-        val raised = with(LocalDensity.current) { limit.raised.toDp() }
-        // a fixed height, always full: there's always room to raise it
-        Modifier.fillMaxWidth().height(226.dp + raised).onSizeChanged { limit.listHeight = Int.MAX_VALUE }
-    }
+    val size = if (LocalSheetLimit.current == null) Modifier.fillMaxSize() else Modifier.fillMaxWidth().height(226.dp)
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 96.dp),
         contentPadding = PaddingValues(start = 8.dp, end = 8.dp, bottom = 4.dp),
@@ -829,7 +791,8 @@ fun RateSheet(vm: AppViewModel, ed: EditorState, modifier: Modifier) {
             items(facts, key = { it.first }) { (label, value) ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
                     Text(label, color = Lc.textDim, fontFamily = Inter, fontSize = 13.sp, modifier = Modifier.width(84.dp))
-                    Text(value.orEmpty(), color = Lc.text, fontFamily = Inter, fontSize = 13.sp)
+                    // a long file name breaks after a - _ or . (a zero-width space there), not mid-word
+                    Text(value.orEmpty().replace(Regex("([-_.])"), "$1\u200B"), color = Lc.text, fontFamily = Inter, fontSize = 13.sp)
                 }
             }
         }

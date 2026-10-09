@@ -8,6 +8,8 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,12 +19,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -311,31 +314,47 @@ private fun AspectShape(w: Float, h: Float, color: Color) {
 @Composable
 private fun CropAspect(vm: AppViewModel, ed: EditorState) {
     val current = ed.crop?.let { aspectChoice(it) }
-    LazyRow(contentPadding = PaddingValues(start = 16.1.dp, end = 16.dp, top = 16.dp, bottom = 16.1.dp), horizontalArrangement = Arrangement.spacedBy(7.8.dp)) {
-        items(aspects, key = { it.first }) { (id, label) ->
-            CropTile(label, selected = id == current, onClick = { vm.setCropAspect(id) }) { color ->
-                when (id) {
-                    "original" -> LcIcon(LcIcon.Original, null, tint = color, size = 21.9.dp)
-                    "free" -> LcIcon(LcIcon.FreeAspect, null, tint = color, size = 21.9.dp)
-                    else -> {
-                        val (a, b) = id.split('x').map { it.toFloat() }
-                        AspectShape(a, b, color)
-                    }
+    val tile: @Composable (String, String) -> Unit = { id, label ->
+        CropTile(label, selected = id == current, onClick = { vm.setCropAspect(id) }) { color ->
+            when (id) {
+                "original" -> LcIcon(LcIcon.Original, null, tint = color, size = 21.9.dp)
+                "free" -> LcIcon(LcIcon.FreeAspect, null, tint = color, size = 21.9.dp)
+                else -> {
+                    val (a, b) = id.split('x').map { it.toFloat() }
+                    AspectShape(a, b, color)
                 }
             }
         }
-        item(key = "turn") { CropTile("Turn", onClick = { vm.cropCommand("crop.rotateAspect") }) { LcIcon(LcIcon.Versions, null, tint = it, size = 21.9.dp) } }
-        item(key = "reset") { CropTile("Reset", onClick = { vm.cropCommand("crop.reset") }) { LcIcon(LcIcon.Undo, null, tint = it, size = 21.9.dp) } }
+    }
+    val turn: @Composable () -> Unit = { CropTile("Turn", onClick = { vm.cropCommand("crop.rotateAspect") }) { LcIcon(LcIcon.Versions, null, tint = it, size = 21.9.dp) } }
+    val reset: @Composable () -> Unit = { CropTile("Reset", onClick = { vm.cropCommand("crop.reset") }) { LcIcon(LcIcon.Undo, null, tint = it, size = 21.9.dp) } }
+    if (LocalSheetLimit.current == null) {
+        // sideways: the panel is tall and narrow, so the tiles fill it in rows
+        FlowRow(
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 16.1.dp, end = 16.dp, top = 16.dp, bottom = 16.1.dp),
+            horizontalArrangement = Arrangement.spacedBy(7.8.dp),
+            verticalArrangement = Arrangement.spacedBy(7.8.dp),
+        ) {
+            aspects.forEach { (id, label) -> tile(id, label) }
+            turn()
+            reset()
+        }
+        return
+    }
+    LazyRow(contentPadding = PaddingValues(start = 16.1.dp, end = 16.dp, top = 16.dp, bottom = 16.1.dp), horizontalArrangement = Arrangement.spacedBy(7.8.dp)) {
+        items(aspects, key = { it.first }) { (id, label) -> tile(id, label) }
+        item(key = "turn") { turn() }
+        item(key = "reset") { reset() }
     }
 }
 
-/** A 50 dp square button with an icon, its name under it (Upright's, as the reference's). */
+/** A 50 dp square button with an icon, its name under it (Upright's, as the reference's). A longer name widens the tile, so neighbours' names never run together. */
 @Composable
 private fun SquareTile(icon: LcIcon, label: String, selected: Boolean? = null, onClick: () -> Unit) {
     val color = if (selected == true) Lc.selected else Lc.text
     // a choice (Upright's) says whether it's on; the others are buttons
     val press = if (selected != null) Modifier.selectable(selected, role = Role.RadioButton, onClick = onClick) else Modifier.clickable(role = Role.Button, onClick = onClick)
-    Column(Modifier.width(50.1.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(Modifier.width(IntrinsicSize.Max), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             Modifier
                 .size(50.1.dp)
@@ -348,7 +367,7 @@ private fun SquareTile(icon: LcIcon, label: String, selected: Boolean? = null, o
             LcIcon(icon, null, tint = color, size = 24.dp)
         }
         // the button already says its name
-        Text(label, color = color, fontFamily = Inter, fontSize = 11.sp, maxLines = 1, softWrap = false, modifier = Modifier.padding(top = 3.9.dp).wrapContentWidth(unbounded = true).clearAndSetSemantics {})
+        Text(label, color = color, fontFamily = Inter, fontSize = 11.sp, maxLines = 1, softWrap = false, modifier = Modifier.padding(top = 3.9.dp).clearAndSetSemantics {})
     }
 }
 

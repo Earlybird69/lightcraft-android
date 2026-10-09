@@ -94,7 +94,7 @@ The reference lays its library out differently on its side, and so does LightCra
 | Tool row: actions, presets, crop, edit, masking, remove, centred; labelled (68 dp) until one is open | ✅ | `ToolRow`; labelled, each as wide as the reference's (Masking 55.9, Remove 55.4, the rest 53.5 dp: 100.2–425.6 dp); open, all 53.5 dp (102.1–423.2); both on the reference's bounds to 0.1 dp |
 | Actions: a row where Edit's sections go: Auto and Fix angle apply at once (one step each), then, set apart, Rate opens its panel | ✅ | `ActionRow`; Fix angle is Upright's automatic correction with the crop constrained (`geometry.upright`), checked on the device |
 | Edit's sections: 53.5 × 68 dp each (a 36 dp icon block over the label), centred, scrolls; Auto set apart | ✅ | `SectionRow`; longer labels (Calibration) widen their slot |
-| The panel: no title, sized to its content up to about two and a half sliders; pull the list up for more | ✅ | `SheetLimit` in `ui/EditPanels.kt`; the size matches; pulling Light's list up raised the panel 180 dp on the device |
+| The panel: no title, sized to its content up to about two and a half sliders; a longer list scrolls inside it (the panel stays put) | ✅ | `SheetPeek` in `ui/EditPanels.kt`; the reference's panels are scroll views in a sheet of fixed height (Light 232, Color 183.9, Detail 130.8 dp in its layout dumps); ours stays 184 dp, checked on the device (the photo didn't move, the sliders did) |
 | Slider rows 48.6 dp: name and value on one line, the bar under them, 16 dp margins | ✅ | `ui/DevelopSlider.kt`; names within 0.3 dp of the reference's. Values keep LightCraft's precision (Exposure `0.00`; the reference showed `0.0` at rest) |
 | Light: a Curve button (36 dp pill) at right, scrolling with the sliders | ✅ | |
 | Light › Curve: the curve on a square over the photo; the panel picks the channel (parametric, point, red, green, blue) | ✅ | `ui/CurveTool.kt`; the line is the engine's own (`MobileSession.tone_curve`, `point_curve`); checked on the device |
@@ -149,6 +149,7 @@ The reference lays its library out differently on its side, and so does LightCra
 | The photo at left with its own top bar | ✅ | `EditorScreen` (wide) |
 | At right: the panel (320 dp, full height), a 2 dp gap, the sections as a column (Auto shorter, set apart), then the tools as a column | ✅ | `SideArea`; sections and panel text on the reference's bounds |
 | Crop, masking, remove and the curve sideways | ✅ | the same panel at the right (a mode's bar at its foot); checked on the device |
+| Sideways the panel's rows fit its 320 dp: the curve's presets and the mask's buttons wrap, crop's aspect tiles fill it in rows, file names break after `-`, `_` or `.`; masking with no mask open has no panel (the photo takes the room) | ✅ | upright these stay a sideways-scrolling row and a sheet; checked on the device |
 
 ## Gestures and behaviour
 
