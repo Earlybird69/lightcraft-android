@@ -646,7 +646,8 @@ private fun TopBarButtons(vm: AppViewModel, ed: EditorState, onCreatePreset: () 
             }
             BarButton(MdIcon.ArrowBack, "Back", size = 40.dp, tint = Lc.barIcon, onClick = vm::closeEditor)
             Spacer(Modifier.weight(1f))
-            if (ed.history.undo != null || ed.history.redo != null) {
+            // there once there's a step to take back, or edits to reset (a photo edited on an earlier visit)
+            if (ed.history.undo != null || ed.history.redo != null || ed.info.edited) {
                 UndoButton(vm, ed)
                 Spacer(Modifier.width(7.7.dp))
             }
