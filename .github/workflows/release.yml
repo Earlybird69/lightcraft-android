@@ -1,6 +1,7 @@
 # Release pipeline: pushing a version tag (v0.0.1-beta, v0.2.0, v1.0.0-rc.1, …) builds the APK
-# signed with the release key and publishes the GitHub Release "LightCraft for Android v<version>"
-# with the APK. A version with a hyphen is marked as a pre-release.
+# signed with the release key and makes it a draft GitHub release named after the tag, with an empty
+# "What's Changed" section. Fill that in on GitHub and publish the draft: it becomes the latest
+# release (betas too: while the app is in beta, every release is one).
 #
 # A manual run (Actions › Release › Run workflow) is a dry run: it builds the APK at the version in
 # gradle.properties and keeps it as the run's artifact, and releases nothing.
@@ -27,9 +28,6 @@ jobs:
   apk:
     name: APK
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.v.outputs.version }}
-      prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v7
 
@@ -45,10 +43,8 @@ jobs:
             echo "::error::'$v' is not a version like 1.2.3 or 1.2.3-beta"
             exit 1
           fi
-          case "$v" in *-*) pre=true ;; *) pre=false ;; esac
           echo "version=$v" >>"$GITHUB_OUTPUT"
-          echo "prerelease=$pre" >>"$GITHUB_OUTPUT"
-          echo "### LightCraft for Android v$v (\`${GITHUB_SHA::9}\`)" >>"$GITHUB_STEP_SUMMARY"
+          echo "### v$v (\`${GITHUB_SHA::9}\`)" >>"$GITHUB_STEP_SUMMARY"
 
       - uses: actions/setup-java@v6
         with:
@@ -126,8 +122,6 @@ jobs:
     permissions:
       contents: write
     env:
-      VERSION: ${{ needs.apk.outputs.version }}
-      PRERELEASE: ${{ needs.apk.outputs.prerelease }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
     steps:
@@ -136,9 +130,7 @@ jobs:
           name: release-apk
           path: dist
 
-      - name: Publish the release
-        working-directory: dist
+      - name: Draft the release
         run: |
-          pre=()
-          if [ "$PRERELEASE" = true ]; then pre=(--prerelease); fi
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "LightCraft for Android v$VERSION" --generate-notes "${pre[@]}" -- *
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" --notes "## What's Changed" -- dist/*
+          echo "Draft **$GITHUB_REF_NAME** is ready: fill in What's Changed and publish it." >>"$GITHUB_STEP_SUMMARY"
