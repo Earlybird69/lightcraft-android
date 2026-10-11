@@ -148,9 +148,10 @@ rebuilds only what changed. Gradle finds `cargo` in `~/.cargo/bin` (or `$CARGO`)
 - The launcher icon is LightCraft's own (`assets/app-icon/lightcraft-1024.png`), copied in at build
   time.
 
-The app follows LightCraft's clean-room rules: nothing comes from Adobe's apps. Their layout and
-behaviour were observed from the running app, view-only, and the notes and screenshots stay in the
-gitignored `plan/`; no Adobe icon, image, font, preset or profile is in the app.
+No Adobe code, icon, image, font, preset or profile is in the app. The reference app's layout and
+behaviour were observed from the running app, view-only; for some screens (the export page, the
+Gallery tab) a decompiled build of it was also read, as a reference for facts such as its option
+lists. The notes and screenshots stay in the gitignored `plan/`.
 
 ## Next
 
