@@ -12,8 +12,7 @@ every develop slider, crop and straighten, paint masks, remove spots, apply pres
 (previewed on the photo), rate and flag them (one at a time or a selection), undo and redo, compare
 against the original, and save or share JPEGs.
 
-The screens follow the reference phone app's layout and behaviour, observed from the running app the
-way the desktop's were (measurements and what we do differently: [`docs/parity-mobile.md`](../../docs/parity-mobile.md)).
+The screens follow the reference phone app's layout and behaviour.
 Where the reference uses Google's Material icons, so does LightCraft (the same Apache-2.0 set,
 `ui/MaterialIcons.kt`); its other icons are LightCraft's own, drawn in code in the same weight
 (`ui/LcIcons.kt`). The font (Inter), the name and the words are LightCraft's own too.
@@ -148,10 +147,7 @@ rebuilds only what changed. Gradle finds `cargo` in `~/.cargo/bin` (or `$CARGO`)
 - The launcher icon is LightCraft's own (`assets/app-icon/lightcraft-1024.png`), copied in at build
   time.
 
-No Adobe code, icon, image, font, preset or profile is in the app. The reference app's layout and
-behaviour were observed from the running app, view-only; for some screens (the export page, the
-Gallery tab) a decompiled build of it was also read, as a reference for facts such as its option
-lists. The notes and screenshots stay in the gitignored `plan/`.
+No Adobe code, icon, image, font, preset or profile is in the app.
 
 ## Next
 

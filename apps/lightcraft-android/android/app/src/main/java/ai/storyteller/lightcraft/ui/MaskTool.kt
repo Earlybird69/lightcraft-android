@@ -263,40 +263,40 @@ fun MaskColumn(vm: AppViewModel, ed: EditorState, modifier: Modifier) {
                                 vm.selectMask(m.id)
                                 menu = true
                             }
-                            LrMenu(expanded = menu, onDismiss = { menu = false }) {
-                                LrMenuItem(LcIcon.Plus, "Add to mask") {
+                            LcMenu(expanded = menu, onDismiss = { menu = false }) {
+                                LcMenuItem(LcIcon.Plus, "Add to mask") {
                                     menu = false
                                     ed.maskPicker = "add"
                                 }
-                                LrMenuItem(LcIcon.Minus, "Subtract from mask") {
+                                LcMenuItem(LcIcon.Minus, "Subtract from mask") {
                                     menu = false
                                     ed.maskPicker = "subtract"
                                 }
-                                LrMenuItem(if (m.visible) MdIcon.VisibilityOff else MdIcon.Visibility, if (m.visible) "Hide" else "Show") {
+                                LcMenuItem(if (m.visible) MdIcon.VisibilityOff else MdIcon.Visibility, if (m.visible) "Hide" else "Show") {
                                     menu = false
                                     vm.toggleMaskVisible()
                                 }
-                                LrMenuItem(LcIcon.Pencil, "Rename") {
+                                LcMenuItem(LcIcon.Pencil, "Rename") {
                                     menu = false
                                     renaming = true
                                 }
-                                LrMenuItem(LcIcon.Versions, "Duplicate") {
+                                LcMenuItem(LcIcon.Versions, "Duplicate") {
                                     menu = false
                                     vm.maskCommand("mask.duplicate")
                                 }
-                                LrMenuItem(LcIcon.Invert, "Invert") {
+                                LcMenuItem(LcIcon.Invert, "Invert") {
                                     menu = false
                                     vm.maskCommand("mask.invert")
                                 }
-                                LrMenuItem(LcIcon.Invert, "Duplicate and invert") {
+                                LcMenuItem(LcIcon.Invert, "Duplicate and invert") {
                                     menu = false
                                     vm.duplicateInvertedMask()
                                 }
-                                LrMenuItem(LcIcon.Trash, "Delete") {
+                                LcMenuItem(LcIcon.Trash, "Delete") {
                                     menu = false
                                     vm.maskCommand("mask.delete")
                                 }
-                                LrMenuItem(LcIcon.Undo, "Reset Current Adjustments") {
+                                LcMenuItem(LcIcon.Undo, "Reset Current Adjustments") {
                                     menu = false
                                     vm.resetMaskAdjustments()
                                 }

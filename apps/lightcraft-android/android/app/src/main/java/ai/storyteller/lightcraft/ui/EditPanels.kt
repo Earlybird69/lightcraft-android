@@ -208,7 +208,7 @@ private val lightRows: List<PanelRow> =
  * (sideways, where the reference shortens Grading and Mix) just the icon.
  */
 @Composable
-fun LrButton(
+fun LcButton(
     label: String?,
     icon: Glyph?,
     description: String = label.orEmpty(),
@@ -453,7 +453,7 @@ private fun LightPanel(vm: AppViewModel, ed: EditorState) {
         item(key = "buttons") {
             // Curve at the right, 10 dp from the panel's top and from the first slider
             Row(Modifier.fillMaxWidth().hiddenWhileDragging().padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 10.dp), horizontalArrangement = Arrangement.End) {
-                LrButton("Curve", LcIcon.CurveLine, textColor = Lc.panelText, pad = 10.dp) { vm.openCurve() }
+                LcButton("Curve", LcIcon.CurveLine, textColor = Lc.panelText, pad = 10.dp) { vm.openCurve() }
             }
         }
     }
@@ -539,9 +539,9 @@ private fun ColorPanel(vm: AppViewModel, ed: EditorState) {
             Row(Modifier.fillMaxWidth().hiddenWhileDragging().padding(start = 16.dp, end = 16.dp, top = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 BwButton(bw) { vm.toggleBlackAndWhite() }
                 Spacer(Modifier.weight(1f))
-                LrButton(if (sideways) null else "Grading", LcIcon.Grading, description = "Grading") { ed.sub = "grading" }
+                LcButton(if (sideways) null else "Grading", LcIcon.Grading, description = "Grading") { ed.sub = "grading" }
                 Spacer(Modifier.width(10.dp))
-                LrButton(if (sideways) null else "Mix", null, description = "Mix", iconContent = { HueRing(17.dp) }) { ed.sub = "mix" }
+                LcButton(if (sideways) null else "Mix", null, description = "Mix", iconContent = { HueRing(17.dp) }) { ed.sub = "mix" }
             }
         }
         item(key = "wb") { WhiteBalanceRow(vm, ed, sideways) }

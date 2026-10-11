@@ -153,7 +153,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * The editor, laid out as the reference app lays it out on a phone (`plan/lightroom-mobile/observed-ui.md`):
+ * The editor, laid out as the reference app lays it out on a phone:
  * the photo on black under a slim top bar, then the open tool's panel, Edit's row of sections and
  * the row of tools. Sideways, the top bar spans only the photo, and the panel, the sections and the
  * tools stand as columns at its right.
@@ -681,48 +681,48 @@ private fun TopBarButtons(vm: AppViewModel, ed: EditorState, onCreatePreset: () 
                 }
                 // the reference's menu for a photo of the library (one from the phone's gallery has fewer)
                 val inLibrary = ed.device == null
-                LrMenu(expanded = more, onDismiss = { more = false }) {
+                LcMenu(expanded = more, onDismiss = { more = false }) {
                     if (inLibrary) {
-                        LrMenuItem(LcIcon.PhotoStack, "Organize") {
+                        LcMenuItem(LcIcon.PhotoStack, "Organize") {
                             more = false
                             ed.organize = true
                         }
                     }
-                    LrMenuItem(LcIcon.ViewOptions, "View options") {
+                    LcMenuItem(LcIcon.ViewOptions, "View options") {
                         more = false
                         ed.viewOptions = true
                     }
                     if (inLibrary) {
-                        LrMenuItem(MdIcon.Info, "Info and rating") {
+                        LcMenuItem(MdIcon.Info, "Info and rating") {
                             more = false
                             ed.infoPage = true
                         }
                     }
-                    LrMenuDivider()
-                    LrMenuItem(LcIcon.CreatePreset, "Create Preset") {
+                    LcMenuDivider()
+                    LcMenuItem(LcIcon.CreatePreset, "Create Preset") {
                         more = false
                         onCreatePreset()
                     }
-                    LrMenuItem(LcIcon.CopySettings, "Copy Settings") {
+                    LcMenuItem(LcIcon.CopySettings, "Copy Settings") {
                         more = false
                         ed.copyPicker = true
                     }
-                    LrMenuItem(LcIcon.PasteSettings, "Paste Settings", enabled = vm.hasCopiedSettings) {
+                    LcMenuItem(LcIcon.PasteSettings, "Paste Settings", enabled = vm.hasCopiedSettings) {
                         more = false
                         vm.pasteSettings()
                     }
-                    LrMenuItem(LcIcon.ApplyPrevious, "Apply from previous") {
+                    LcMenuItem(LcIcon.ApplyPrevious, "Apply from previous") {
                         more = false
                         previous = true
                     }
-                    LrMenuDivider()
+                    LcMenuDivider()
                     if (inLibrary && vm.photos.any { it.id == ed.photoId }) {
-                        LrMenuItem(LcIcon.Play, "Start Slideshow") {
+                        LcMenuItem(LcIcon.Play, "Start Slideshow") {
                             more = false
                             vm.startSlideshow(ed.photoId)
                         }
                     }
-                    LrMenuItem(MdIcon.HelpOutline, "Help") {
+                    LcMenuItem(MdIcon.HelpOutline, "Help") {
                         more = false
                         help()
                     }
@@ -835,7 +835,7 @@ fun MenuItem(text: String, start: Dp = 12.dp, onClick: () -> Unit) {
  * corners, hanging from the button under it at the screen's right edge.
  */
 @Composable
-fun LrMenu(expanded: Boolean, onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+fun LcMenu(expanded: Boolean, onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismiss,
@@ -849,9 +849,9 @@ fun LrMenu(expanded: Boolean, onDismiss: () -> Unit, content: @Composable Column
     )
 }
 
-/** A row of [LrMenu]: 48 dp, its icon 24 dp in from the left, its words 38 dp further; faint while it can't be used. */
+/** A row of [LcMenu]: 48 dp, its icon 24 dp in from the left, its words 38 dp further; faint while it can't be used. */
 @Composable
-fun LrMenuItem(icon: Glyph, text: String, enabled: Boolean = true, onClick: () -> Unit) {
+fun LcMenuItem(icon: Glyph, text: String, enabled: Boolean = true, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -869,7 +869,7 @@ fun LrMenuItem(icon: Glyph, text: String, enabled: Boolean = true, onClick: () -
 
 /** The 1 dp line between a menu's groups, edge to edge. */
 @Composable
-fun LrMenuDivider() = Box(Modifier.fillMaxWidth().height(1.dp).background(Lc.menuEdge))
+fun LcMenuDivider() = Box(Modifier.fillMaxWidth().height(1.dp).background(Lc.menuEdge))
 
 /**
  * An icon button: [icon] (its own size, or [iconSize]) in a [size] square that presses as a circle,

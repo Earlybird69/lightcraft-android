@@ -124,7 +124,7 @@ private val sides: WindowInsets
 const val HELP_URL = "https://github.com/storytold/lightcraft"
 
 /**
- * The library, laid out as the reference app's (`plan/lightroom-mobile/observed-ui.md`): a top bar
+ * The library, laid out as the reference app's: a top bar
  * (menu, search, more), the view's title with filter and sort, the grid, and the add button.
  */
 @Composable
@@ -832,7 +832,7 @@ private fun Centered(text: String) {
 
 // ------------------------------------------------------------------------------------- sideways
 
-/** The reference's landscape library, measured from its capture (`plan/lightroom-mobile/observed-ui.md`). */
+/** The reference's landscape library, measured from its capture. */
 private object Wide {
     /** The navigation rail, after the system bar's inset. */
     val rail = 80.3.dp

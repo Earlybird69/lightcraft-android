@@ -122,7 +122,7 @@ fun SettingsPickerPage(
                         Text("Select", color = optionText, fontFamily = Inter, fontSize = 17.sp)
                         LcIcon(LcIcon.ChevronDown, null, tint = optionText, size = 18.dp, modifier = Modifier.padding(start = 6.dp))
                     }
-                    LrMenu(expanded = selecting, onDismiss = { selecting = false }) {
+                    LcMenu(expanded = selecting, onDismiss = { selecting = false }) {
                         listOf(
                             "All" to allSettingsGroups,
                             "Default" to defaultSettingsGroups,
@@ -257,7 +257,7 @@ fun CreatePresetPage(vm: AppViewModel, onDismiss: () -> Unit) {
                         Text(group, color = optionText, fontFamily = Inter, fontSize = 17.sp)
                         LcIcon(LcIcon.ChevronDown, null, tint = optionText, size = 18.dp, modifier = Modifier.padding(start = 6.dp))
                     }
-                    LrMenu(expanded = choosing, onDismiss = { choosing = false }) {
+                    LcMenu(expanded = choosing, onDismiss = { choosing = false }) {
                         groups.forEach { g ->
                             MenuItem(g) {
                                 choosing = false

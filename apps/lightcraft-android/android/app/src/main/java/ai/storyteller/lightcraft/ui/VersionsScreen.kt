@@ -134,13 +134,13 @@ fun VersionsPage(vm: AppViewModel, ed: EditorState, onDismiss: () -> Unit) {
                     Spacer(Modifier.weight(1f))
                     Box {
                         BarButton(MdIcon.MoreVert, "Versions options", size = 48.dp, tint = Lc.panelTextSoft) { menu = true }
-                        LrMenu(expanded = menu, onDismiss = { menu = false }) {
+                        LcMenu(expanded = menu, onDismiss = { menu = false }) {
                             Text("DELETE", color = versionText, fontFamily = Inter, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
-                            LrMenuItem(LcIcon.Trash, "All Named Versions", enabled = vm.versions.any { !it.auto }) {
+                            LcMenuItem(LcIcon.Trash, "All Named Versions", enabled = vm.versions.any { !it.auto }) {
                                 menu = false
                                 vm.deleteVersions(auto = false)
                             }
-                            LrMenuItem(LcIcon.Trash, "All Autosaves", enabled = vm.versions.any { it.auto }) {
+                            LcMenuItem(LcIcon.Trash, "All Autosaves", enabled = vm.versions.any { it.auto }) {
                                 menu = false
                                 vm.deleteVersions(auto = true)
                             }
@@ -182,16 +182,16 @@ fun VersionsPage(vm: AppViewModel, ed: EditorState, onDismiss: () -> Unit) {
                                     Text(v.name, color = versionText, fontFamily = Inter, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
                                     Text(versionWhen(v.created), color = versionText, fontFamily = Inter, fontSize = 12.sp, maxLines = 1)
                                 }
-                                LrMenu(expanded = options == v, onDismiss = { options = null }) {
-                                    LrMenuItem(LcIcon.Pencil, "Rename") {
+                                LcMenu(expanded = options == v, onDismiss = { options = null }) {
+                                    LcMenuItem(LcIcon.Pencil, "Rename") {
                                         options = null
                                         renaming = v
                                     }
-                                    LrMenuItem(LcIcon.Versions, "Update with Current Settings") {
+                                    LcMenuItem(LcIcon.Versions, "Update with Current Settings") {
                                         options = null
                                         vm.updateVersion(v.index)
                                     }
-                                    LrMenuItem(LcIcon.Trash, "Delete") {
+                                    LcMenuItem(LcIcon.Trash, "Delete") {
                                         options = null
                                         if (shown == v) shown = null
                                         vm.deleteVersion(v.index)
