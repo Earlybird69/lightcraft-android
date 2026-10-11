@@ -1,0 +1,146 @@
+# Release pipeline: pushing a version tag (v0.0.1-beta, v0.2.0, v1.0.0-rc.1, …) builds the APK
+# signed with the release key and publishes the GitHub Release "LightCraft for Android v<version>"
+# with the APK and its checksum. A version with a hyphen is marked as a pre-release.
+#
+# A manual run (Actions › Release › Run workflow) is a dry run: it builds the APK at the version in
+# gradle.properties and keeps it as the run's artifact, and releases nothing.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  # never cancel a release halfway; a newer push waits its turn
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  apk:
+    name: APK
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: v
+        name: Resolve version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="$(sed -n 's/^lightcraft\.version=//p' apps/lightcraft-android/android/gradle.properties)"
+          fi
+          if ! printf '%s' "$v" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'; then
+            echo "::error::'$v' is not a version like 1.2.3 or 1.2.3-beta"
+            exit 1
+          fi
+          case "$v" in *-*) pre=true ;; *) pre=false ;; esac
+          echo "version=$v" >>"$GITHUB_OUTPUT"
+          echo "prerelease=$pre" >>"$GITHUB_OUTPUT"
+          echo "### LightCraft for Android v$v (\`${GITHUB_SHA::9}\`)" >>"$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-android
+
+      - name: Install cargo-ndk and the Android NDK
+        run: |
+          cargo install cargo-ndk --locked
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;29.0.14206865" >/dev/null
+
+      - name: Release key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.LIGHTCRAFT_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d >"$RUNNER_TEMP/release.p12"
+            echo "LIGHTCRAFT_KEYSTORE=$RUNNER_TEMP/release.p12" >>"$GITHUB_ENV"
+          elif [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "::error::No release key: a release is never signed with the debug key"
+            exit 1
+          else
+            echo "::warning::No release key: this dry run is signed with the debug key"
+          fi
+
+      - name: Build
+        working-directory: apps/lightcraft-android/android
+        env:
+          LIGHTCRAFT_KEYSTORE_PASSWORD: ${{ secrets.LIGHTCRAFT_KEYSTORE_PASSWORD }}
+          LIGHTCRAFT_KEY_ALIAS: ${{ secrets.LIGHTCRAFT_KEY_ALIAS }}
+          LIGHTCRAFT_KEY_PASSWORD: ${{ secrets.LIGHTCRAFT_KEY_PASSWORD }}
+        run: ./gradlew assembleRelease -Plightcraft.abis=arm64-v8a "-Plightcraft.version=${{ steps.v.outputs.version }}" --no-daemon
+
+      - name: APK and checksum
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          mkdir -p dist
+          apk="dist/lightcraft-android-$VERSION.apk"
+          cp apps/lightcraft-android/android/app/build/outputs/apk/release/app-release.apk "$apk"
+          apksigner="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n 1)apksigner"
+          certs="$("$apksigner" verify --print-certs "$apk")"
+          if [ "$GITHUB_REF_TYPE" = tag ] && grep -q "CN=Android Debug" <<<"$certs"; then
+            echo "::error::$apk is signed with the debug key"
+            exit 1
+          fi
+          (cd dist && sha256sum -- * | tee SHA256SUMS.txt)
+          {
+            echo
+            grep "certificate SHA-256" <<<"$certs" | sed 's/^/    /'
+            sed 's/^/    /' dist/SHA256SUMS.txt
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-apk
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Remove the release key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.p12"
+
+  release:
+    name: GitHub Release
+    needs: apk
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.apk.outputs.version }}
+      PRERELEASE: ${{ needs.apk.outputs.prerelease }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-apk
+          path: dist
+
+      - name: Publish the release
+        working-directory: dist
+        run: |
+          pre=()
+          if [ "$PRERELEASE" = true ]; then pre=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "LightCraft for Android v$VERSION" --generate-notes "${pre[@]}" -- *
