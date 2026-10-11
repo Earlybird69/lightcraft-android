@@ -1,6 +1,6 @@
 # Release pipeline: pushing a version tag (v0.0.1-beta, v0.2.0, v1.0.0-rc.1, …) builds the APK
 # signed with the release key and publishes the GitHub Release "LightCraft for Android v<version>"
-# with the APK and its checksum. A version with a hyphen is marked as a pre-release.
+# with the APK. A version with a hyphen is marked as a pre-release.
 #
 # A manual run (Actions › Release › Run workflow) is a dry run: it builds the APK at the version in
 # gradle.properties and keeps it as the run's artifact, and releases nothing.
@@ -90,7 +90,7 @@ jobs:
           LIGHTCRAFT_KEY_PASSWORD: ${{ secrets.LIGHTCRAFT_KEY_PASSWORD }}
         run: ./gradlew assembleRelease -Plightcraft.abis=arm64-v8a "-Plightcraft.version=${{ steps.v.outputs.version }}" --no-daemon
 
-      - name: APK and checksum
+      - name: APK
         env:
           VERSION: ${{ steps.v.outputs.version }}
         run: |
@@ -103,11 +103,9 @@ jobs:
             echo "::error::$apk is signed with the debug key"
             exit 1
           fi
-          (cd dist && sha256sum -- * | tee SHA256SUMS.txt)
           {
             echo
             grep "certificate SHA-256" <<<"$certs" | sed 's/^/    /'
-            sed 's/^/    /' dist/SHA256SUMS.txt
           } >>"$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v7
