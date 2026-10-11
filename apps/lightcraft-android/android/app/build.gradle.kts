@@ -13,6 +13,28 @@ val rustAbis: List<String> =
     providers.gradleProperty("lightcraft.abis").getOrElse("arm64-v8a,x86_64").split(',').map { it.trim() }.filter { it.isNotEmpty() }
 val minApi = 29
 
+// The app's version: gradle.properties' lightcraft.version, or the version tag's when the release
+// workflow builds a release. The version code follows from it (0.0.1-beta → 101, 0.0.1-beta.2 →
+// 102, 0.0.1 → 199, 0.1.0-beta → 10001), so a pre-release comes before its release and every
+// release before the next version's pre-releases.
+val appVersion: String = providers.gradleProperty("lightcraft.version").get()
+val appVersionCode: Int = run {
+    val m = requireNotNull(Regex("""(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z-]+?(\.(\d+))?)?""").matchEntire(appVersion)) {
+        "lightcraft.version $appVersion is not a version like 1.2.3, 1.2.3-beta or 1.2.3-beta.4"
+    }
+    val (major, minor, patch) = m.groupValues.subList(1, 4).map { it.toInt() }
+    val pre = if (m.groupValues[4].isEmpty()) null else m.groupValues[6].toIntOrNull() ?: 1
+    require(minor < 100 && patch < 100 && (pre ?: 1) in 1..98) {
+        "lightcraft.version $appVersion: minor and patch must be under 100, and a pre-release's number 1 to 98"
+    }
+    ((major * 100 + minor) * 100 + patch) * 100 + (pre ?: 99)
+}
+
+// The release key, when the build is given one (the release workflow passes it from the repository's
+// secrets). Without one a release build is signed with the debug key: it installs, but it can't
+// update a published release.
+val releaseKeystore: String? = providers.environmentVariable("LIGHTCRAFT_KEYSTORE").orNull
+
 /** rustup's `cargo` (Android Studio may not see rustup's PATH), else `cargo` from PATH; `CARGO` overrides. */
 val cargoExecutable: String = run {
     val exe = if (System.getProperty("os.name").lowercase().startsWith("windows")) "cargo.exe" else "cargo"
@@ -95,12 +117,23 @@ android {
     ndkVersion = "29.0.14206865"
 
     defaultConfig {
-        applicationId = "ai.storyteller.lightcraft"
+        applicationId = "io.github.artcraftandroid.lightcraft"
         minSdk = minApi
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.4.0"
+        versionCode = appVersionCode
+        versionName = appVersion
         ndk { abiFilters.addAll(rustAbis) }
+    }
+
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = providers.environmentVariable("LIGHTCRAFT_KEYSTORE_PASSWORD").orNull
+                keyAlias = providers.environmentVariable("LIGHTCRAFT_KEY_ALIAS").orNull
+                keyPassword = providers.environmentVariable("LIGHTCRAFT_KEY_PASSWORD").orNull
+            }
+        }
     }
 
     buildTypes {
@@ -111,8 +144,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // sign with your own key before publishing
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
     compileOptions {
