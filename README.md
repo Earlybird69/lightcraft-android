@@ -178,6 +178,5 @@ Lightroom is a trademark of Adobe Inc.
 
 ## Misc info for myself
 
-Always use [Semantic Commit](https://kapeli.com/cheat_sheets/Semantic_Commits.docset/Contents/Resources/Documents/index)
-messages. To keep it simple use only 3 commit message types: `feat:` / `fix:` / `chore:`. Releases are tagged with
-semantic versions: `v0.0.1-beta` for a pre-release, `v1.0.0` for a stable one.
+Try to use [semantic commit](https://kapeli.com/cheat_sheets/Semantic_Commits.docset/Contents/Resources/Documents/index)
+messages. Use `feat:` / `fix:` / `chore:` / `docs:` / etc.
