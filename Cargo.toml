@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "apps/lightcraft-mobile", "apps/lightcraft-mobile/bindgen"]
+members = ["crates/*", "apps/lightcraft-android", "apps/lightcraft-android/bindgen"]
 
 [workspace.package]
 version = "0.4.0"

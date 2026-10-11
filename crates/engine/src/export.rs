@@ -181,6 +181,143 @@ pub enum SharpenAmount {
     High,
 }
 
+/// The shape a [`Border`] frames the photo to: its own (`original`), the same margin on every side
+/// (`even`), or a fixed ratio, width to height.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BorderRatio {
+    #[default]
+    #[serde(rename = "original")]
+    Original,
+    #[serde(rename = "even")]
+    Even,
+    #[serde(rename = "1:1")]
+    R1x1,
+    #[serde(rename = "2:3")]
+    R2x3,
+    #[serde(rename = "3:2")]
+    R3x2,
+    #[serde(rename = "4:5")]
+    R4x5,
+    #[serde(rename = "5:4")]
+    R5x4,
+    #[serde(rename = "9:16")]
+    R9x16,
+    #[serde(rename = "2:1")]
+    R2x1,
+}
+
+impl BorderRatio {
+    /// Width to height, or `None` (the photo's own, or an even margin).
+    fn ratio(self) -> Option<(f64, f64)> {
+        match self {
+            BorderRatio::Original | BorderRatio::Even => None,
+            BorderRatio::R1x1 => Some((1.0, 1.0)),
+            BorderRatio::R2x3 => Some((2.0, 3.0)),
+            BorderRatio::R3x2 => Some((3.0, 2.0)),
+            BorderRatio::R4x5 => Some((4.0, 5.0)),
+            BorderRatio::R5x4 => Some((5.0, 4.0)),
+            BorderRatio::R9x16 => Some((9.0, 16.0)),
+            BorderRatio::R2x1 => Some((2.0, 1.0)),
+        }
+    }
+}
+
+/// A plain border around an exported photo. The photo keeps its size (sizes and dimensions are the
+/// photo's own) and the file grows: with an even border by half the thickness (a percentage of the
+/// long edge) on every side; otherwise the photo is first padded out to the ratio (its own for
+/// `original`) and that frame then grows by the thickness.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Border {
+    /// 0..[`BORDER_THICKNESS_MAX`], a percentage.
+    pub thickness: f32,
+    pub ratio: BorderRatio,
+    /// sRGB colour.
+    pub color: [u8; 3],
+}
+
+impl Default for Border {
+    fn default() -> Self {
+        Self { thickness: 10.0, ratio: BorderRatio::Original, color: [255; 3] }
+    }
+}
+
+/// The largest thickness a border takes, a percentage.
+pub const BORDER_THICKNESS_MAX: f32 = 100.0;
+
+/// The keys of a `border` object ([`Border`], camelCase).
+pub const BORDER_PARAMS: &[&str] = &["thickness", "ratio", "color"];
+
+impl Border {
+    /// The margins around a `w × h` photo in pixels: left, right, top, bottom.
+    pub fn margins(&self, w: usize, h: usize) -> [usize; 4] {
+        let t = if self.thickness.is_finite() { self.thickness.clamp(0.0, BORDER_THICKNESS_MAX) as f64 / 100.0 } else { 0.0 };
+        let (wf, hf) = (w as f64, h as f64);
+        if self.ratio == BorderRatio::Even {
+            let m = (wf.max(hf) * t / 2.0).round().max(0.0) as usize;
+            return [m; 4];
+        }
+        let (a, b) = self.ratio.ratio().unwrap_or((wf.max(1.0), hf.max(1.0)));
+        let scale = (wf / a).max(hf / b);
+        let side = |frame: f64, own: f64| ((frame * (1.0 + t) - own) / 2.0).round().max(0.0) as usize;
+        let (x, y) = (side(a * scale, wf), side(b * scale, hf));
+        [x, x, y, y]
+    }
+
+    /// The bordered size of a `w × h` photo.
+    pub fn framed(&self, w: usize, h: usize) -> (usize, usize) {
+        let [l, r, t, b] = self.margins(w, h);
+        (w + l + r, h + t + b)
+    }
+}
+
+/// `src` (`channels` values a pixel) inside margins `[left, right, top, bottom]` of `fill`.
+fn bordered<T: Copy>(src: &[T], w: usize, h: usize, channels: usize, m: [usize; 4], fill: &[T]) -> Vec<T> {
+    let [l, r, t, b] = m;
+    let (bw, bh) = (w + l + r, h + t + b);
+    let mut out: Vec<T> = Vec::with_capacity(bw * bh * channels);
+    for _ in 0..bw * bh {
+        out.extend_from_slice(fill);
+    }
+    for y in 0..h {
+        let from = src.get(y * w * channels..(y + 1) * w * channels);
+        let at = ((y + t) * bw + l) * channels;
+        if let (Some(from), Some(to)) = (from, out.get_mut(at..at + w * channels)) {
+            to.copy_from_slice(from);
+        }
+    }
+    out
+}
+
+/// [`Border`] around an 8-bit image in `space`.
+pub fn add_border(img: &Rgba8, b: &Border, space: OutputSpace) -> Rgba8 {
+    let m = b.margins(img.width, img.height);
+    if m == [0; 4] {
+        return img.clone();
+    }
+    let c = srgb8_in(space, b.color);
+    let (w, h) = b.framed(img.width, img.height);
+    Rgba8 { width: w, height: h, data: bordered(&img.data, img.width, img.height, 1, m, &[[c[0], c[1], c[2], 255]]) }
+}
+
+/// [`Border`] around a high-bit-depth image (in its own space: 16-bit encoded, 32-bit linear).
+pub fn add_border_deep(img: &DeepImage, b: &Border) -> DeepImage {
+    let m = b.margins(img.width, img.height);
+    if m == [0; 4] {
+        return img.clone();
+    }
+    let c = srgb8_in(img.space, b.color);
+    let samples = match &img.samples {
+        DeepSamples::U16(v) => DeepSamples::U16(bordered(v, img.width, img.height, 3, m, &c.map(|x| x as u16 * 257))),
+        DeepSamples::F32(v) => {
+            let t = img.space.trc();
+            DeepSamples::F32(bordered(v, img.width, img.height, 3, m, &c.map(|x| t.decode(x as f32 / 255.0))))
+        }
+    };
+    let (w, h) = b.framed(img.width, img.height);
+    DeepImage { width: w, height: h, space: img.space, samples }
+}
+
 /// Where a watermark sits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -219,6 +356,16 @@ pub struct Watermark {
     pub image: String,
     /// The graphic's width as a fraction of the photo's width.
     pub image_width: f32,
+    /// The text's weight: bold (Inter SemiBold), else regular (Inter Regular).
+    pub bold: bool,
+    /// The text slanted (a synthetic oblique; horizontal text only).
+    pub italic: bool,
+    /// The margin from the left or right edge as a fraction of the photo's width, and from the top or
+    /// bottom as a fraction of its height (each in place of [`Watermark::inset`] when given).
+    pub offset_x: Option<f32>,
+    pub offset_y: Option<f32>,
+    /// Turned clockwise by 0, 90, 180 or 270 degrees (text or graphic) before it's placed.
+    pub rotation: u16,
     /// The colour space the photo is in (set by the encoder; the graphic is converted into it).
     #[serde(skip)]
     pub target: Option<OutputSpace>,
@@ -237,22 +384,73 @@ impl Default for Watermark {
             shadow: true,
             image: String::new(),
             image_width: 0.2,
+            bold: true,
+            italic: false,
+            offset_x: None,
+            offset_y: None,
+            rotation: 0,
             target: None,
         }
     }
 }
 
-/// Inter SemiBold (OFL, see assets/ATTRIBUTION.md).
+/// Inter SemiBold, the bold text (OFL, see assets/ATTRIBUTION.md).
 static WATERMARK_FONT: &[u8] = include_bytes!("../../../assets/fonts/Inter-SemiBold.ttf");
+/// Inter Regular, the regular text.
+static WATERMARK_FONT_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/Inter-Regular.ttf");
+
+/// The slant of italic watermark text (tan 12°).
+const WATERMARK_SLANT: f32 = 0.2126;
+
+impl Watermark {
+    /// The margins from the left/right and top/bottom edges of a `w × h` photo, in pixels.
+    fn margins(&self, w: f32, h: f32) -> (f32, f32) {
+        let inset = self.inset.clamp(0.0, 0.4) * w.min(h);
+        let frac = |o: Option<f32>, side: f32| o.filter(|v| v.is_finite()).map_or(inset, |v| v.clamp(0.0, 1.0) * side);
+        (frac(self.offset_x, w), frac(self.offset_y, h))
+    }
+
+    /// The quarter turns clockwise (0–3).
+    fn quarter_turns(&self) -> u16 {
+        (self.rotation / 90) % 4
+    }
+
+    /// Where a block of `bw × bh` (as it stands, turned) goes on a `w × h` photo: its top left.
+    fn place(&self, bw: f32, bh: f32, w: f32, h: f32) -> (f32, f32) {
+        let (mx, my) = self.margins(w, h);
+        use Anchor::*;
+        let ox = match self.anchor {
+            TopLeft | Left | BottomLeft => mx,
+            Top | Center | Bottom => (w - bw) / 2.0,
+            TopRight | Right | BottomRight => w - mx - bw,
+        };
+        let oy = match self.anchor {
+            TopLeft | Top | TopRight => my,
+            Left | Center | Right => (h - bh) / 2.0,
+            BottomLeft | Bottom | BottomRight => h - my - bh,
+        };
+        (ox, oy)
+    }
+}
+
+/// A point `(x, y)` of a `bw × bh` block turned `turns` quarter turns clockwise.
+fn turned(x: f32, y: f32, bw: f32, bh: f32, turns: u16) -> (f32, f32) {
+    match turns {
+        1 => (bh - y, x),
+        2 => (bw - x, bh - y),
+        3 => (y, bw - x),
+        _ => (x, y),
+    }
+}
 
 /// The watermark faces: Inter first, then the craft-fonts CJK faces (Mincho first, the watermark's
 /// serif look; then any other CJK face — a watermark has no UI language, so every CJK script is
 /// offered). Without craft-fonts that is Inter alone, and CJK characters draw as Inter's
 /// missing-glyph box.
-fn watermark_fonts(craft: &'static [crate::fonts::CraftFont]) -> Vec<ab_glyph::FontRef<'static>> {
+fn watermark_fonts(craft: &'static [crate::fonts::CraftFont], bold: bool) -> Vec<ab_glyph::FontRef<'static>> {
     let mut cjk: Vec<_> = crate::fonts::cjk(craft).collect();
     cjk.sort_by_key(|f| !f.is_mincho());
-    std::iter::once(WATERMARK_FONT)
+    std::iter::once(if bold { WATERMARK_FONT } else { WATERMARK_FONT_REGULAR })
         .chain(cjk.into_iter().map(|f| f.bytes))
         .filter_map(|bytes| ab_glyph::FontRef::try_from_slice(bytes).ok())
         .collect()
@@ -347,7 +545,7 @@ fn watermark_coverage(
     if text.is_empty() || width == 0 || height == 0 {
         return;
     }
-    let fonts = watermark_fonts(craft);
+    let fonts = watermark_fonts(craft, wm.bold);
     let Some(latin) = fonts.first() else { return };
     let vertical_data: Vec<_> = if wm.vertical {
         fonts.iter().map(|font| harfrust::FontRef::new(font.font_data()).ok().map(|face| harfrust::ShaperData::new(&face))).collect()
@@ -438,19 +636,13 @@ fn watermark_coverage(
         }
     }
     let (tw, th) = if wm.vertical { (columns as f32 * px, tw.max(y)) } else { (tw.max(x), y + px) };
-    let inset = wm.inset.clamp(0.0, 0.4) * short;
+    // italic: each glyph leans from its baseline, so the block widens by the tallest lean
+    let slant = if wm.italic && !wm.vertical { WATERMARK_SLANT } else { 0.0 };
+    let tw = tw + slant * px;
+    let turns = wm.quarter_turns();
+    let (bw, bh) = if turns % 2 == 1 { (th, tw) } else { (tw, th) };
     let (w, h) = (width as f32, height as f32);
-    use Anchor::*;
-    let ox = match wm.anchor {
-        TopLeft | Left | BottomLeft => inset,
-        Top | Center | Bottom => (w - tw) / 2.0,
-        TopRight | Right | BottomRight => w - inset - tw,
-    };
-    let oy = match wm.anchor {
-        TopLeft | Top | TopRight => inset,
-        Left | Center | Right => (h - th) / 2.0,
-        BottomLeft | Bottom | BottomRight => h - inset - th,
-    };
+    let (ox, oy) = wm.place(bw, bh, w, h);
     let alpha = wm.opacity.clamp(0.0, 1.0);
     let mut blend = |gx: i32, gy: i32, cov: f32, col: [u8; 3], a: f32| {
         if gx < 0 || gy < 0 || gx >= width as i32 || gy >= height as i32 {
@@ -462,6 +654,7 @@ fn watermark_coverage(
         if wm.shadow { &[((px * 0.05).max(1.0), [0, 0, 0], 0.45), (0.0, wm.color, 1.0)] } else { &[(0.0, wm.color, 1.0)] };
     for &(off, col, a) in passes {
         for (face, g, rotation) in &glyphs {
+            let baseline = g.position.y;
             if let Some(o) = fonts.get(*face).and_then(|font| font.outline_glyph(g.clone())) {
                 let b = o.px_bounds();
                 o.draw(|gx, gy, cov| {
@@ -470,6 +663,8 @@ fn watermark_coverage(
                         Some((cx, cy)) => (cx - (sy - cy), cy + (sx - cx)),
                         None => (sx, sy),
                     };
+                    let sx = sx + (baseline - sy) * slant;
+                    let (sx, sy) = turned(sx, sy, tw, th, turns);
                     blend((ox + off + sx) as i32, (oy + off + sy) as i32, cov, col, a * alpha);
                 });
             }
@@ -514,28 +709,24 @@ fn logo_coverage(width: usize, height: usize, wm: &Watermark, mut blend_px: impl
         [p[0] as f32 * a, p[1] as f32 * a, p[2] as f32 * a, a]
     });
     let scaled = lightcraft_raster::resample::resize(&pre, lw, lh, lightcraft_raster::resample::Filter::Mitchell);
-    let inset = wm.inset.clamp(0.0, 0.4) * width.min(height) as f32;
-    let (w, h, lwf, lhf) = (width as f32, height as f32, lw as f32, lh as f32);
-    use Anchor::*;
-    let ox = match wm.anchor {
-        TopLeft | Left | BottomLeft => inset,
-        Top | Center | Bottom => (w - lwf) / 2.0,
-        TopRight | Right | BottomRight => w - inset - lwf,
-    }
-    .max(0.0) as usize;
-    let oy = match wm.anchor {
-        TopLeft | Top | TopRight => inset,
-        Left | Center | Right => (h - lhf) / 2.0,
-        BottomLeft | Bottom | BottomRight => h - inset - lhf,
-    }
-    .max(0.0) as usize;
+    let turns = wm.quarter_turns();
+    let (bw, bh) = if turns % 2 == 1 { (lh, lw) } else { (lw, lh) };
+    let (ox, oy) = wm.place(bw as f32, bh as f32, width as f32, height as f32);
+    let (ox, oy) = (ox.max(0.0) as usize, oy.max(0.0) as usize);
     let space = wm.target.unwrap_or(OutputSpace::Srgb);
     let op = wm.opacity.clamp(0.0, 1.0);
     for y in 0..lh {
         for x in 0..lw {
             let [r, g, b, a] = scaled.get(x, y);
             let a = a.clamp(0.0, 1.0);
-            let (px, py) = (ox + x, oy + y);
+            // the graphic's pixel where it stands once turned
+            let (tx, ty) = match turns {
+                1 => (lh - 1 - y, x),
+                2 => (lw - 1 - x, lh - 1 - y),
+                3 => (y, lw - 1 - x),
+                _ => (x, y),
+            };
+            let (px, py) = (ox + tx, oy + ty);
             if a <= 1e-4 || px >= width || py >= height {
                 continue;
             }
@@ -595,6 +786,8 @@ pub struct ExportOptions {
     pub remove_location: bool,
     /// Text watermark (none when absent or the text is empty).
     pub watermark: Option<Watermark>,
+    /// A border around the photo (none when absent or of no size).
+    pub border: Option<Border>,
     /// Output colour space (AVIF is always sRGB: its muxer cannot embed a profile).
     pub color_space: OutputSpace,
     /// Bits per channel: 8, 16 (PNG, TIFF), 32 (TIFF: float, linear) or 10 (AVIF); `None` = the
@@ -621,6 +814,7 @@ impl Default for ExportOptions {
             metadata: MetadataPolicy::All,
             remove_location: false,
             watermark: None,
+            border: None,
             color_space: OutputSpace::Srgb,
             bit_depth: None,
         }
@@ -656,12 +850,29 @@ pub const OPTION_PARAMS: &[&str] = &[
     "metadata",
     "removeLocation",
     "watermark",
+    "border",
     "colorSpace",
     "bitDepth",
 ];
 
 /// The keys of a `watermark` object ([`Watermark`], camelCase).
-pub const WATERMARK_PARAMS: &[&str] = &["text", "vertical", "size", "opacity", "anchor", "inset", "color", "shadow", "image", "imageWidth"];
+pub const WATERMARK_PARAMS: &[&str] = &[
+    "text",
+    "vertical",
+    "size",
+    "opacity",
+    "anchor",
+    "inset",
+    "color",
+    "shadow",
+    "image",
+    "imageWidth",
+    "bold",
+    "italic",
+    "offsetX",
+    "offsetY",
+    "rotation",
+];
 
 /// Text height as a fraction of the short edge: the range the renderer draws without clamping.
 pub const WATERMARK_SIZE_RANGE: (f32, f32) = (0.005, 0.5);
@@ -715,6 +926,9 @@ impl ExportOptions {
             o.retain(|k, _| OPTION_PARAMS.contains(&k.as_str()) || TARGET_PARAMS.contains(&k.as_str()));
             if let Some(w) = o.get_mut("watermark").and_then(serde_json::Value::as_object_mut) {
                 w.retain(|k, _| WATERMARK_PARAMS.contains(&k.as_str()));
+            }
+            if let Some(b) = o.get_mut("border").and_then(serde_json::Value::as_object_mut) {
+                b.retain(|k, _| BORDER_PARAMS.contains(&k.as_str()));
             }
         }
         p
@@ -810,6 +1024,27 @@ impl ExportOptions {
                     }
                 }
                 "watermark" => Self::validate_watermark(cmd, v)?,
+                "border" => {
+                    let Some(b) = v.as_object() else { return Err(bad(format!("`{k}` must be an object {{thickness, ratio, color}}"))) };
+                    for (bk, bv) in b {
+                        match bk.as_str() {
+                            "thickness" => {
+                                num("border.thickness", bv, 0.0, BORDER_THICKNESS_MAX as f64)?;
+                            }
+                            "ratio" => {
+                                serde_json::from_value::<BorderRatio>(bv.clone())
+                                    .map_err(|_| bad("`border.ratio` must be one of original|even|1:1|2:3|3:2|4:5|5:4|9:16|2:1".into()))?;
+                            }
+                            "color" => {
+                                let ok = bv.as_array().is_some_and(|a| a.len() == 3 && a.iter().all(|c| matches!(whole(c), Some(0..=255))));
+                                if !ok {
+                                    return Err(bad("`border.color` must be [r, g, b] with 0..255 each (sRGB)".into()));
+                                }
+                            }
+                            _ => return Err(bad(unknown_key("border key", bk, BORDER_PARAMS))),
+                        }
+                    }
+                }
                 "id" => {
                     int(k, v, 0, i64::MAX)?;
                 }
@@ -852,8 +1087,15 @@ impl ExportOptions {
                 "text" | "image" => {
                     v.as_str().ok_or_else(|| bad(format!("`watermark.{k}` must be a string")))?;
                 }
-                "vertical" | "shadow" => {
+                "vertical" | "shadow" | "bold" | "italic" => {
                     v.as_bool().ok_or_else(|| bad(format!("`watermark.{k}` must be true or false")))?;
+                }
+                "offsetX" => frac(k, v, (0.0, 1.0), "fraction of the photo's width")?,
+                "offsetY" => frac(k, v, (0.0, 1.0), "fraction of the photo's height")?,
+                "rotation" => {
+                    if !matches!(whole(v), Some(0 | 90 | 180 | 270)) {
+                        return Err(bad("`watermark.rotation` must be 0, 90, 180 or 270 (degrees, clockwise)".into()));
+                    }
                 }
                 "size" => frac(k, v, WATERMARK_SIZE_RANGE, "fraction of the short edge")?,
                 "opacity" => frac(k, v, (0.0, 1.0), "0 = invisible, 1 = solid")?,
@@ -920,6 +1162,10 @@ impl ExportOptions {
                 _ => None,
             }
             .filter(|w: &Watermark| !w.text.trim().is_empty() || !w.image.trim().is_empty()),
+            border: p
+                .get("border")
+                .and_then(|v| serde_json::from_value::<Border>(v.clone()).ok())
+                .filter(|b| b.thickness.is_finite() && (b.thickness > 0.0 || b.ratio.ratio().is_some())),
             color_space: s("colorSpace").and_then(OutputSpace::parse).unwrap_or(d.color_space),
             bit_depth: u("bitDepth").filter(|b| matches!(b, 8 | 10 | 16 | 32)).map(|b| b as u8),
         }
@@ -1126,6 +1372,9 @@ pub fn encode_with_metadata(img: &Rgba8, o: &ExportOptions, meta: Option<&Metada
         let wm = Watermark { color: srgb8_in(space, wm.color), target: Some(space), ..wm.clone() };
         draw_watermark(&mut img, &wm);
     }
+    if let Some(b) = &o.border {
+        img = add_border(&img, b, space);
+    }
     let profile = icc::write_named(named_space(space));
     let exif = meta.map(lightcraft_meta::write_exif);
     let xmp = meta.map(|m| lightcraft_meta::write_xmp(m, None));
@@ -1209,6 +1458,9 @@ pub fn encode_deep(img: &DeepImage, o: &ExportOptions, meta: Option<&Metadata>) 
     if let Some(wm) = &o.watermark {
         let wm = Watermark { color: srgb8_in(img.space, wm.color), target: Some(img.space), ..wm.clone() };
         draw_watermark_deep(&mut img, &wm);
+    }
+    if let Some(b) = &o.border {
+        img = add_border_deep(&img, b);
     }
     let profile = match img.samples {
         DeepSamples::F32(_) => icc::write_matrix_trc(&img.space.rgb_space(), &lightcraft_codecs::Trc::Linear),
@@ -1422,7 +1674,9 @@ impl PreparedExport {
                 let RenderWork { job, meta, opts } = *w;
                 let r = job.run().rendered?;
                 let bytes = encode_rendered(&r, &opts, meta.as_ref())?;
-                Ok(Exported { file_name, bytes, width: r.image.width, height: r.image.height, sidecars: Vec::new() })
+                // the file's size: the photo's and its border's
+                let (width, height) = opts.border.map_or((r.image.width, r.image.height), |b| b.framed(r.image.width, r.image.height));
+                Ok(Exported { file_name, bytes, width, height, sidecars: Vec::new() })
             }
             Work::File { path, read, packet, dng, label, size } => {
                 let bytes = match &read {
@@ -1721,7 +1975,7 @@ mod tests {
     /// missing-glyph boxes), and Latin text is unaffected.
     #[test]
     fn watermarks_work_without_craft_fonts() {
-        assert_eq!(watermark_fonts(&[]).len(), 1, "Inter only");
+        assert_eq!(watermark_fonts(&[], true).len(), 1, "Inter only");
         for wm in [vertical_japanese(), Watermark { text: "LightCraft 日本語".into(), ..Watermark::default() }] {
             let mut covered = 0usize;
             watermark_coverage(400, 300, &wm, &[], |_, _, k, _| covered += usize::from(k > 0.0));
@@ -1825,7 +2079,7 @@ mod tests {
     #[test]
     fn japanese_watermarks_support_vertical_columns() {
         use ab_glyph::Font;
-        let fonts = watermark_fonts(crate::fonts::CRAFT_FONTS);
+        let fonts = watermark_fonts(crate::fonts::CRAFT_FONTS, true);
         if fonts.len() < 2 {
             eprintln!("skipped: built without CRAFT_FONTS_DIR, so there is no Japanese watermark face");
             return;
@@ -2219,7 +2473,7 @@ mod tests {
         );
         assert!(
             err(json!({"text": "x", "bogus": 1}))
-                .contains("unknown watermark key `bogus` (one of text, vertical, size, opacity, anchor, inset, color, shadow, image, imageWidth)")
+                .contains("unknown watermark key `bogus` (one of text, vertical, size, opacity, anchor, inset, color, shadow, image, imageWidth, bold, italic, offsetX, offsetY, rotation)")
         );
         assert!(err(json!({"text": "x", "sizee": 0.1})).contains("did you mean `size`"));
         for size in [json!(3), json!(0.5001), json!(0), json!("big")] {

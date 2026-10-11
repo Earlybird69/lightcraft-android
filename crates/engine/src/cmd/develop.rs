@@ -21,6 +21,50 @@ fn edit(s: &mut Session, c: &str, label: &str, f: impl FnOnce(&mut DevelopSettin
     ok()
 }
 
+/// What Reset returns a photo to (`develop.reset`'s `to`), as the phone app's Reset choices name them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResetTo {
+    /// The photo as imported: its import look (a default preset's) or else LightCraft's defaults.
+    Import,
+    /// LightCraft's defaults, the white balance as shot, whatever look it was imported with.
+    Default,
+    /// The defaults, keeping its crop, orientation and geometry.
+    Adjustments,
+}
+
+impl ResetTo {
+    /// `import`, `default` (or `all`) and `adjustments`.
+    pub fn parse(s: &str) -> Option<ResetTo> {
+        match s {
+            "import" => Some(ResetTo::Import),
+            "default" | "all" => Some(ResetTo::Default),
+            "adjustments" => Some(ResetTo::Adjustments),
+            _ => None,
+        }
+    }
+}
+
+/// Photo `id`'s settings once reset `to` (from its `current` ones).
+pub fn reset_settings(s: &Session, id: PhotoId, current: &DevelopSettings, to: ResetTo) -> DevelopSettings {
+    let look = if to == ResetTo::Import { s.catalog.photo(id).and_then(|p| p.import_look.clone()) } else { None };
+    let fresh = match look {
+        Some(l) => (*l).clone(),
+        None => {
+            let info = s.source_info(id);
+            DevelopSettings {
+                wb: lightcraft_develop::WhiteBalance { mode: WbMode::AsShot, temp: info.as_shot_temp, tint: info.as_shot_tint },
+                ..Default::default()
+            }
+        }
+    };
+    if to == ResetTo::Adjustments {
+        let keep = lightcraft_develop::extract_groups(current, &[SettingsGroup::Crop, SettingsGroup::Geometry]);
+        lightcraft_develop::apply_partial(&fresh, &keep, 1.0)
+    } else {
+        fresh
+    }
+}
+
 fn section_param(p: &Value, c: &str) -> Result<Section> {
     let v = p.get("section").cloned().ok_or_else(|| bad(c, "missing `section`"))?;
     serde_json::from_value(v).map_err(|e| bad(c, e.to_string()))
@@ -63,12 +107,13 @@ fn aspect_tuple(c: &str, x: f64, y: f64) -> Result<(u32, u32)> {
     Ok((a as u32, b as u32))
 }
 
-fn set_aspect(d: &mut DevelopSettings, w: f64, h: f64, aspect: Option<(u32, u32)>) {
+fn set_aspect(d: &mut DevelopSettings, w: f64, h: f64, aspect: Option<(u32, u32)>, as_given: bool) {
     d.crop.aspect = aspect;
     let a = aspect.map(|(aw, ah)| {
-        // orientation of the crop follows the image (landscape image → landscape crop)
+        // orientation of the crop follows the image (landscape image → landscape crop), unless the
+        // aspect is a format with its own (a 9:16 story is upright on any photo)
         let (aw, ah) = (aw as f64, ah as f64);
-        if (w >= h) == (aw >= ah) { aw / ah } else { ah / aw }
+        if as_given || (w >= h) == (aw >= ah) { aw / ah } else { ah / aw }
     });
     let angle = d.crop.geometry.angle;
     d.crop.geometry = crop_fit_angle(w, h, angle, a);
@@ -185,30 +230,28 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(())
             })
         }),
-        cmd!("develop.reset", "Reset Edits", ["Photo"], Some("Cmd+Shift+R"), "{ids?}", has_selection, |s, p| {
-            let ids = s.targets(p);
-            let ops = ids
-                .iter()
-                .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
-                .filter_map(|(id, _d)| {
-                    // back to the photo's import defaults when a default preset gave it its look
-                    let look = s.catalog.photo(id).and_then(|p| p.import_look.clone());
-                    let fresh = match look {
-                        Some(l) => (*l).clone(),
-                        None => {
-                            let info = s.source_info(id);
-                            DevelopSettings {
-                                wb: lightcraft_develop::WhiteBalance { mode: WbMode::AsShot, temp: info.as_shot_temp, tint: info.as_shot_tint },
-                                ..Default::default()
-                            }
-                        }
-                    };
-                    s.develop_op(id, fresh, "Reset")
-                })
-                .collect();
-            s.commit("Reset", Op::Batch { ops })?;
-            ok()
-        }),
+        cmd!(
+            "develop.reset",
+            "Reset Edits",
+            ["Photo"],
+            Some("Cmd+Shift+R"),
+            "{ids?, to?: import (default: the photo as imported, its import look if a default preset gave it one) | default (LightCraft's defaults) | adjustments (the defaults, keeping crop, orientation and geometry)}",
+            has_selection,
+            |s, p| {
+                let to = match str_param(p, "to") {
+                    Some(t) => ResetTo::parse(t).ok_or_else(|| bad("develop.reset", format!("to `{t}`: import, default or adjustments")))?,
+                    None => ResetTo::Import,
+                };
+                let ids = s.targets(p);
+                let ops = ids
+                    .iter()
+                    .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
+                    .filter_map(|(id, d)| s.develop_op(id, reset_settings(s, id, &d, to), "Reset"))
+                    .collect();
+                s.commit("Reset", Op::Batch { ops })?;
+                ok()
+            }
+        ),
         cmd!(
             "develop.resetSection",
             "Reset Section",
@@ -299,6 +342,8 @@ pub fn specs() -> Vec<CommandSpec> {
                         let src = s.source_now(id, SourceLevel::Thumb).map_err(|e| bad("develop.wb", e))?;
                         lightcraft_pipeline::auto::auto_wb(&src, &info)
                     }
+                    // Custom picked from the list: the white balance in effect now, under its own name
+                    WbMode::Custom => lightcraft_pipeline::local::effective_wb(&info, &s.develop_of(id).unwrap_or_default()),
                     m => m
                         .preset()
                         .map(|(t, ti)| {
@@ -509,7 +554,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Crop Aspect",
             [],
             None,
-            "{aspect: \"original\"|\"free\"|\"current\" (lock the crop's present shape)|\"toggle\" (lock ↔ free)|\"1x1\"|\"4x5\"|\"8.5x11\"|\"5x7\"|\"2x3\"|\"4x3\"|\"16x9\"|\"16x10\"|[w,h]}",
+            "{aspect: \"original\"|\"free\"|\"current\" (lock the crop's present shape)|\"toggle\" (lock ↔ free)|\"1x1\"|\"4x5\"|\"8.5x11\"|\"5x7\"|\"2x3\"|\"4x3\"|\"16x9\"|\"16x10\"|[w,h], asGiven?: bool (keep the aspect's own orientation instead of the photo's)}",
             has_active,
             |s, p| {
                 let id = active(s, "crop.aspect")?;
@@ -544,11 +589,12 @@ pub fn specs() -> Vec<CommandSpec> {
                     },
                     _ => return Err(bad("crop.aspect", "missing aspect")),
                 };
+                let as_given = p.get("asGiven").and_then(Value::as_bool).unwrap_or(false);
                 edit(s, "crop.aspect", "Crop Aspect", |d| {
                     if aspect.is_none() {
                         d.crop.aspect = None;
                     } else {
-                        set_aspect(d, w, h, aspect);
+                        set_aspect(d, w, h, aspect, as_given);
                     }
                     Ok(())
                 })

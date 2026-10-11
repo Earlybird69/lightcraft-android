@@ -38,6 +38,38 @@ fn changing_one_wb_control_resolves_as_shot_without_stale_tint() {
 }
 
 #[test]
+fn custom_white_balance_keeps_the_one_in_effect() {
+    use lightcraft_develop::WbMode;
+    let mut s = demo();
+    let id = s.active().unwrap();
+    s.execute("develop.wb", &json!({"mode": "custom", "temp": 7000, "tint": 5})).unwrap();
+    // picked from the list without values, Custom names the white balance in effect (it went back to the shot's)
+    s.execute("develop.wb", &json!({"mode": "custom"})).unwrap();
+    let d = active_dev(&s);
+    assert_eq!((d.wb.mode, d.wb.temp, d.wb.tint), (WbMode::Custom, 7000.0, 5.0));
+    s.execute("develop.wb", &json!({"mode": "asShot"})).unwrap();
+    s.execute("develop.wb", &json!({"mode": "custom"})).unwrap();
+    let info = s.source_info(id);
+    assert_eq!((active_dev(&s).wb.temp, active_dev(&s).wb.tint), (info.as_shot_temp, info.as_shot_tint));
+}
+
+#[test]
+fn reset_returns_the_photo_to_what_was_asked() {
+    let mut s = demo();
+    let id = s.active().unwrap();
+    s.execute("develop.set", &json!({"values": {"light.exposure": 1.0, "crop.angle": 3.0}})).unwrap();
+    // Adjustments: back to the defaults, the crop kept
+    s.execute("develop.reset", &json!({"to": "adjustments"})).unwrap();
+    assert_eq!(active_dev(&s).light.exposure, 0.0);
+    assert_eq!(active_dev(&s).crop.geometry.angle, 3.0);
+    // All: the crop too
+    s.execute("develop.reset", &json!({"to": "default"})).unwrap();
+    assert_eq!(active_dev(&s).crop.geometry.angle, 0.0);
+    assert!(s.execute("develop.reset", &json!({"to": "later"})).is_err());
+    assert_eq!(s.active(), Some(id));
+}
+
+#[test]
 fn demo_library_loads() {
     let mut s = demo();
     assert_eq!(s.visible().len(), 24);
@@ -116,6 +148,31 @@ fn albums_crud() {
     assert!(s.execute("album.delete", &json!({"id": f})).is_err(), "non-empty folder");
     s.execute("album.delete", &json!({"id": a})).unwrap();
     s.execute("album.delete", &json!({"id": f})).unwrap();
+}
+
+/// Given a folder holding an album and a folder with an album of its own, when it's deleted with
+/// its contents, then all four go in one step (the photos stay), the view leaves an album that went,
+/// and one undo brings them all back where they were.
+#[test]
+fn a_folder_goes_with_its_contents_in_one_step() {
+    let mut s = demo();
+    let photos = s.catalog.len();
+    let f = s.execute("album.create", &json!({"name": "Trips", "folder": true})).unwrap()["id"].as_u64().unwrap();
+    let a = s.execute("album.create", &json!({"name": "Best", "parent": f, "addSelected": true})).unwrap()["id"].as_u64().unwrap();
+    let g = s.execute("album.create", &json!({"name": "2026", "parent": f, "folder": true})).unwrap()["id"].as_u64().unwrap();
+    let b = s.execute("album.create", &json!({"name": "Alps", "parent": g})).unwrap()["id"].as_u64().unwrap();
+    s.execute("library.source", &json!({"kind": "album", "id": b})).unwrap();
+    s.execute("album.delete", &json!({"id": f, "contents": true})).unwrap();
+    for id in [f, a, g, b] {
+        assert!(s.catalog.album(lightcraft_catalog::AlbumId(id)).is_none(), "{id} deleted");
+    }
+    assert_eq!(s.catalog.len(), photos, "the photos stay");
+    assert_eq!(s.source, crate::LibrarySource::All);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.catalog.album(lightcraft_catalog::AlbumId(b)).unwrap().parent, Some(lightcraft_catalog::AlbumId(g)));
+    assert_eq!(s.catalog.album(lightcraft_catalog::AlbumId(g)).unwrap().parent, Some(lightcraft_catalog::AlbumId(f)));
+    assert_eq!(s.catalog.album(lightcraft_catalog::AlbumId(a)).unwrap().photos.len(), 1);
+    assert!(s.execute("album.delete", &json!({"id": 9999, "contents": true})).is_err(), "no such album");
 }
 
 /// Given an album and a folder, when something is created inside each, then only the folder
@@ -426,6 +483,23 @@ fn crop_aspect_lock_current_and_toggle() {
     assert!((aw as f64 / ah as f64 - want).abs() < 0.01, "{aw}:{ah} vs {want}");
     s.execute("crop.aspect", &json!({"aspect": "toggle"})).unwrap();
     assert!(active_dev(&s).crop.aspect.is_none(), "toggle unlocks");
+}
+
+#[test]
+fn crop_aspect_as_given_keeps_its_own_orientation() {
+    let mut s = demo();
+    let id = s.active().unwrap();
+    let p = s.catalog.photo(id).unwrap();
+    let (pw, ph) = (p.width as f64, p.height as f64);
+    // the other way round from the photo
+    let (aw, ah) = if pw > ph { (9.0, 16.0) } else { (16.0, 9.0) };
+    // a ratio follows the photo's way round…
+    s.execute("crop.aspect", &json!({"aspect": [aw, ah]})).unwrap();
+    assert_eq!(active_dev(&s).crop.geometry.rect_px(pw, ph).aspect() > 1.0, pw > ph);
+    // …a format with its own keeps it (a 9:16 story is upright on any photo)
+    s.execute("crop.aspect", &json!({"aspect": [aw, ah], "asGiven": true})).unwrap();
+    let r = active_dev(&s).crop.geometry.rect_px(pw, ph);
+    assert!((r.aspect() - aw / ah).abs() < 0.01, "{} vs {}", r.aspect(), aw / ah);
 }
 
 // Feature: dragging crop handles (issue 295)
