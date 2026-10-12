@@ -147,6 +147,9 @@ object Lc {
     /** The editor's top bar icons (back, share, save, more). */
     val barIcon = Color(0xFFEBEBEB)
 
+    /** The mask toggle while the mask shows over the photo (the reference greys its struck glyph). */
+    val barIconOn = Color(0xFF838383)
+
     /** A popup menu (the editor's More): its fill, its 1 dp edge and the lines between its groups… */
     val menu = Color(0xFF1D1D1D)
     val menuEdge = Color(0xFF4B4B4B)

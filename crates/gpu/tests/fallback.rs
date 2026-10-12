@@ -23,6 +23,7 @@ fn masked(s: &mut DevelopSettings, k: usize) {
         s.masks.push(Mask {
             id: i as u32 + 1,
             components: vec![MaskComponent {
+                hidden: false,
                 name: None,
                 op: MaskOp::Add,
                 invert: false,

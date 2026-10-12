@@ -133,7 +133,7 @@ LightCraft for Android is in beta.
 | Light, Color (white balance, eyedropper), Mix, Grading, Effects, Detail, Optics, Tone Curve (+ targeted) | ✅ |
 | Profiles and presets (with amount), copy and paste settings | ✅ |
 | Crop (ratios, Instagram and TikTok formats), straighten, Upright, turns and flips, manual transforms | ✅ |
-| Masking: brush, linear, radial, colour and luminance range, add and subtract, a colour tint | ✅ · AI masks (subject, sky) ⬜ |
+| Masking: brush, linear, radial, colour and luminance range (a point or an area), add and subtract, each part's menu, a colour tint | ✅ · AI masks (subject, sky) ⬜ |
 | Remove, heal and clone spots | ✅ |
 | Save or share: JPG, TIF, AVIF (DNG for raws) or the original; small, full or custom size; quality, naming, sharpening, colour space, metadata, watermark and border | ✅ |
 | Upright and sideways layouts | ✅ |

@@ -276,4 +276,16 @@ class LayoutLogicTest {
         assertEquals(listOf(0.0, 0.0, 50.0, 50.0), px(borderMargins(400.0, 300.0, 0, "1:1")))
         assertEquals(listOf(20.0, 20.0, 70.0, 70.0), px(borderMargins(400.0, 300.0, 10, "1:1")))
     }
+
+    /** The luminance picker's lightness and the engine's range scale map back and forth as the engine's (`masks::range_from_lightness`). */
+    @Test
+    fun luminanceLightnessMapsToTheEnginesScale() {
+        for (l in listOf(0.05, 0.3, 0.46, 0.66, 0.9, 0.99)) assertEquals(l, lightnessFromRange(rangeFromLightness(l)), 1e-9)
+        // middle grey (L* 49.5) sits at 8/12 of the scale; white is its top, black its foot
+        assertEquals(8.0 / 12.0, rangeFromLightness((116.0 * Math.cbrt(0.18) - 16.0) / 100.0), 1e-6)
+        assertEquals(1.0, rangeFromLightness(1.0), 0.0)
+        assertEquals(1.0, lightnessFromRange(1.0), 0.0)
+        assertEquals(0.0, rangeFromLightness(0.0), 0.0)
+        assertEquals(0.0, lightnessFromRange(0.0), 0.0)
+    }
 }

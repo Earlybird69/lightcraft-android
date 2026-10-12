@@ -72,8 +72,8 @@ enum class LcIcon : Glyph {
     // Actions' Fix angle: a grid seen at an angle (the photo's lines set straight)
     AngleGrid,
 
-    // Masking's top bar: the mask shown over the photo, or not
-    MaskOverlay, MaskOverlayOff,
+    // Masking's top bar: show or hide the mask over the photo (struck either way, as the reference's)
+    MaskOverlay,
 
     // Edit's Effects: a frame darkened towards its middle's edge (a vignette)
     SectionEffects,
@@ -751,15 +751,13 @@ private class Pen(private val scope: DrawScope, private val color: Color, weight
                 arc(11f, 13.5f, 3f, 0f, 90f)
                 line(12.6f to 14.9f, 11f to 16.5f, 12.6f to 18.1f)
             }
-            LcIcon.MaskOverlay, LcIcon.MaskOverlayOff -> {
-                // a frame filled, the mask a disc cut from it; struck through while hidden
-                rectFill(2.5f, 3.5f, 17.5f, 16.5f, 1.5f)
-                cutDot(10f, 10f, 4.4f)
-                dot(10f, 10f, 2.6f)
-                if (icon == LcIcon.MaskOverlayOff) {
-                    cutLine(1.5f to 1.8f, 18.5f to 18.8f)
-                    line(3f to 2f, 18f to 18.5f)
-                }
+            LcIcon.MaskOverlay -> {
+                // the reference's: a frame filled, the mask a disc cut from it, struck through with a
+                // gap either side of the stroke (in both states: the tint tells them apart)
+                rectFill(2.9f, 4.3f, 16.8f, 15.7f, 0.2f)
+                cutDot(10.2f, 9.9f, 3.5f)
+                cutFill(listOf(2.6f to 4.4f, 4.4f to 2.6f, 17.4f to 15.6f, 15.6f to 17.4f))
+                line(3.6f to 3.6f, 16.4f to 16.4f)
             }
             LcIcon.SectionEffects -> {
                 // a frame, light at its corners round a dark disc

@@ -17,7 +17,6 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -26,14 +25,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
@@ -42,7 +40,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,7 +60,11 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
@@ -71,7 +75,31 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.cos
@@ -134,7 +162,7 @@ fun maskIcon(kind: String): LcIcon = maskKinds.firstOrNull { it.first == kind }?
  * disc fading out from its middle; a dropper over a colour wheel; a dropper over a grey ramp.
  */
 @Composable
-fun MaskKindIcon(kind: String, modifier: Modifier) {
+fun MaskKindIcon(kind: String, modifier: Modifier, mono: Boolean = false) {
     when (kind) {
         "linear" -> Canvas(modifier) {
             val s = size.minDimension * 0.78f
@@ -151,11 +179,33 @@ fun MaskKindIcon(kind: String, modifier: Modifier) {
             Canvas(Modifier.matchParentSize()) {
                 val r = size.minDimension * 0.34f
                 val c = Offset(size.width * 0.4f, size.height * 0.6f)
-                drawCircle(Brush.sweepGradient(listOf(Color(0xFFB04848), Color(0xFFB0A048), Color(0xFF48A060), Color(0xFF4878B0), Color(0xFF9A48B0), Color(0xFFB04848)), c), r, c)
+                // in a part's square the wheel is greys, as the reference's
+                val wheel = if (mono) {
+                    listOf(Color(0xFFE0E0E0), Color(0xFF9A9A9A), Color(0xFF6A6A6A), Color(0xFFB8B8B8), Color(0xFF808080), Color(0xFFE0E0E0))
+                } else {
+                    listOf(Color(0xFFB04848), Color(0xFFB0A048), Color(0xFF48A060), Color(0xFF4878B0), Color(0xFF9A48B0), Color(0xFFB04848))
+                }
+                drawCircle(Brush.sweepGradient(wheel, c), r, c)
+                if (mono) drawCircle(Color.White, r, c, style = Stroke(1.2.dp.toPx()))
             }
-            MdIcon(MdIcon.Colorize, null, tint = Color(0xFFD0D0D0), size = 16.dp, modifier = Modifier.align(Alignment.TopEnd))
+            MdIcon(MdIcon.Colorize, null, tint = if (mono) Color.White else Color(0xFFD0D0D0), size = 16.dp, modifier = Modifier.align(Alignment.TopEnd))
         }
-        "luminanceRange" -> Box(modifier) {
+        "luminanceRange" -> if (mono) {
+            Box(modifier) {
+                Canvas(Modifier.matchParentSize()) {
+                    val c = Offset(size.width * 0.42f, size.height * 0.58f)
+                    val r = size.minDimension * 0.2f
+                    val w = 1.3.dp.toPx()
+                    drawCircle(Color.White, r, c, style = Stroke(w))
+                    for (k in 0 until 8) {
+                        val a = Math.toRadians(k * 45.0)
+                        val (ca, sa) = cos(a).toFloat() to sin(a).toFloat()
+                        drawLine(Color.White, Offset(c.x + ca * r * 1.45f, c.y + sa * r * 1.45f), Offset(c.x + ca * r * 1.9f, c.y + sa * r * 1.9f), w)
+                    }
+                }
+                MdIcon(MdIcon.Colorize, null, tint = Color.White, size = 16.dp, modifier = Modifier.align(Alignment.TopEnd))
+            }
+        } else Box(modifier) {
             Canvas(Modifier.matchParentSize()) {
                 val r = size.minDimension * 0.34f
                 val c = Offset(size.width * 0.4f, size.height * 0.6f)
@@ -186,12 +236,29 @@ fun kindLabel(kind: String): String = maskKinds.firstOrNull { it.first == kind }
 
 // ------------------------------------------------------------------------------ masks button
 
+/** Part [i] of [m]'s name: the one it was given, else its kind and its number among the mask's parts of that kind ("Color Range 1"). */
+fun partName(m: MaskInfo, i: Int): String {
+    val p = m.components.getOrNull(i) ?: return m.name
+    p.name?.let { return it }
+    return "${kindLabel(p.kind)} ${m.components.take(i + 1).count { it.kind == p.kind }}"
+}
+
+/** The selected mask's frame: blue while the mask itself is edited, light while one of its parts is (the reference's). */
+private val partSelectedFrame = Color(0xFF1473E6)
+private val groupOfPartFrame = Color(0xFFCCCDCE)
+private val maskCard = Color.Black
+private val nestedArrow = Color(0xFFA2A2A2)
+
 /**
  * Masking's column against the right edge, as the reference's: 76 dp of its grey (8 dp corners at
- * the left) holding the blue + (a new mask) over a 50 dp picture of each mask, the one edited
- * framed; the handle at its left (or a sideways drag) opens it to 232 dp, each mask's name and its
- * menu beside its picture, as the reference's: add to it, subtract from it, hide (show) it, rename,
- * duplicate, invert, duplicate and invert, delete. A hidden mask's picture and name show faint.
+ * the left) holding the blue + (a new mask) over a 50 dp picture of each mask, the newest first;
+ * the handle at its left (or a sideways drag) opens it to 232 dp, each mask's name and its menu
+ * beside its picture (add to it, subtract from it, hide or show it, rename, duplicate, invert,
+ * duplicate and invert, delete). The edited mask stands on a black card with its parts under it
+ * (the newest first, the first marked ↳; tap one to edit it): each a 40 dp square of its kind,
+ * framed blue while edited, a − on it while it subtracts, an eye struck through while hidden; open,
+ * with its name and its menu (hide, rename, duplicate, convert to subtract or add, delete); then
+ * a button to add a part to the mask or subtract one (open: a row for each).
  */
 @Composable
 fun MaskColumn(vm: AppViewModel, ed: EditorState, modifier: Modifier) {
@@ -199,21 +266,26 @@ fun MaskColumn(vm: AppViewModel, ed: EditorState, modifier: Modifier) {
     val width by animateDpAsState(if (open) 232.dp else 76.dp, tween(250, easing = AccelerateDecelerate), label = "masks")
     Row(modifier, verticalAlignment = Alignment.Bottom) {
         if (ed.masks.isNotEmpty()) {
-            // the reference's handle: a 44 x 60 dp grip just outside the column
+            // the reference's handle: a 2 x 42 dp line in a 44 x 60 dp grip just outside the column
             Box(
                 Modifier
                     .size(44.dp, 60.dp)
                     .pointerInput(Unit) {
-                        detectHorizontalDragGestures { change, drag ->
+                        // the whole drag counts, however slow: left opens, right closes
+                        var dragged = 0f
+                        detectHorizontalDragGestures(
+                            onDragStart = { dragged = 0f },
+                            onDragEnd = { if (dragged < -8.dp.toPx()) open = true else if (dragged > 8.dp.toPx()) open = false },
+                        ) { change, drag ->
                             change.consume()
-                            if (drag < -8f) open = true else if (drag > 8f) open = false
+                            dragged += drag
                         }
                     }
                     .clickable(role = Role.Button) { open = !open }
                     .semantics { contentDescription = if (open) "Collapse the masks" else "Expand the masks" },
                 contentAlignment = Alignment.CenterEnd,
             ) {
-                Box(Modifier.padding(end = 6.dp).size(4.dp, 28.dp).background(Lc.panelButtonBorder, RoundedCornerShape(2.dp)))
+                Box(Modifier.padding(end = 6.8.dp).size(2.dp, 42.dp).background(Lc.panelText))
             }
         }
         Column(
@@ -223,7 +295,7 @@ fun MaskColumn(vm: AppViewModel, ed: EditorState, modifier: Modifier) {
                 .background(Lc.masksColumn)
                 .heightIn(max = 420.dp)
                 .verticalScroll(rememberScrollState())
-                .padding(vertical = 8.dp),
+                .padding(top = 15.6.dp, bottom = 7.8.dp),
         ) {
             Row(Modifier.padding(start = 16.dp).height(44.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(
@@ -232,82 +304,225 @@ fun MaskColumn(vm: AppViewModel, ed: EditorState, modifier: Modifier) {
                         .clip(CircleShape)
                         .background(Lc.primary)
                         .clickable(role = Role.Button) { ed.maskPicker = "new" }
-                        .semantics { contentDescription = "Create new mask" },
+                        .semantics { contentDescription = "Create new Mask" },
                     contentAlignment = Alignment.Center,
                 ) {
                     MdIcon(MdIcon.Add, null, tint = Color.White, size = 30.dp)
                 }
-                if (open) Text("Create new mask", color = Lc.panelText, fontFamily = Inter, fontSize = 14.sp, maxLines = 1, modifier = Modifier.padding(start = 12.dp))
+                if (open) Text("Create new Mask", color = Lc.panelText, fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, modifier = Modifier.padding(start = 16.dp))
             }
-            ed.masks.forEach { m ->
-                val selected = m.id == ed.selectedMask
-                var menu by remember { mutableStateOf(false) }
-                var renaming by remember { mutableStateOf(false) }
-                val shown = if (m.visible) 1f else 0.4f
-                Row(
-                    Modifier.fillMaxWidth().padding(top = 8.dp).clickable(role = Role.Button) { vm.selectMask(m.id) }.padding(start = 13.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    MaskThumb(m, ed.info.width.toFloat(), ed.info.height.toFloat(), selected, Modifier.size(50.dp).alpha(shown))
-                    if (open) {
-                        Text(
-                            m.name,
-                            color = if (selected) Lc.panelText else Lc.panelTextSoft,
-                            fontFamily = Inter,
-                            fontSize = 14.sp,
-                            maxLines = 1,
-                            modifier = Modifier.weight(1f).padding(start = 12.dp).alpha(shown),
-                        )
-                        Box {
-                            BarButton(LcIcon.More, "${m.name} options", size = 40.dp, tint = Lc.panelTextSoft) {
-                                vm.selectMask(m.id)
-                                menu = true
-                            }
-                            LcMenu(expanded = menu, onDismiss = { menu = false }) {
-                                LcMenuItem(LcIcon.Plus, "Add to mask") {
-                                    menu = false
-                                    ed.maskPicker = "add"
-                                }
-                                LcMenuItem(LcIcon.Minus, "Subtract from mask") {
-                                    menu = false
-                                    ed.maskPicker = "subtract"
-                                }
-                                LcMenuItem(if (m.visible) MdIcon.VisibilityOff else MdIcon.Visibility, if (m.visible) "Hide" else "Show") {
-                                    menu = false
-                                    vm.toggleMaskVisible()
-                                }
-                                LcMenuItem(LcIcon.Pencil, "Rename") {
-                                    menu = false
-                                    renaming = true
-                                }
-                                LcMenuItem(LcIcon.Versions, "Duplicate") {
-                                    menu = false
-                                    vm.maskCommand("mask.duplicate")
-                                }
-                                LcMenuItem(LcIcon.Invert, "Invert") {
-                                    menu = false
-                                    vm.maskCommand("mask.invert")
-                                }
-                                LcMenuItem(LcIcon.Invert, "Duplicate and invert") {
-                                    menu = false
-                                    vm.duplicateInvertedMask()
-                                }
-                                LcMenuItem(LcIcon.Trash, "Delete") {
-                                    menu = false
-                                    vm.maskCommand("mask.delete")
-                                }
-                                LcMenuItem(LcIcon.Undo, "Reset Current Adjustments") {
-                                    menu = false
-                                    vm.resetMaskAdjustments()
-                                }
-                            }
-                        }
+            // the newest mask first, as the reference's
+            ed.masks.asReversed().forEach { m ->
+                if (m.id == ed.selectedMask) {
+                    Column(Modifier.padding(start = 5.9.dp, end = 5.9.dp, top = 7.8.dp).fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(maskCard).padding(vertical = 7.8.dp)) {
+                        MaskRow(vm, ed, m, open)
+                        MaskPartRows(vm, ed, m, open)
+                    }
+                } else {
+                    MaskRow(vm, ed, m, open, Modifier.padding(top = 7.8.dp))
+                }
+            }
+            // 15.6 dp under the + or a mask's picture, 7.8 under the edited mask's card (the reference's)
+            if (ed.masks.firstOrNull()?.id != ed.selectedMask) Spacer(Modifier.height(7.8.dp))
+        }
+    }
+}
+
+/** A mask's picture (open: its name and its menu too); the edited mask's framed. */
+@Composable
+private fun MaskRow(vm: AppViewModel, ed: EditorState, m: MaskInfo, open: Boolean, modifier: Modifier = Modifier) {
+    val selected = m.id == ed.selectedMask
+    var menu by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf(false) }
+    val shown = if (m.visible) 1f else 0.4f
+    // in the card the picture sits 7 dp in (closed) or 10 dp (open); outside it 13 or 16 dp from the column's edge
+    val start = when {
+        selected && open -> 10.2.dp
+        selected -> 7.dp
+        open -> 16.dp
+        else -> 13.dp
+    }
+    Row(
+        modifier.fillMaxWidth().height(50.dp).clickable(role = Role.Button) { vm.selectMask(m.id) }.padding(start = start),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val frame = when {
+            !selected -> null
+            ed.maskPart < 0 -> Color(0xFF378EF0)
+            else -> groupOfPartFrame
+        }
+        MaskThumb(m, ed.info.width.toFloat(), ed.info.height.toFloat(), frame, ed.maskThumbs[m.id], Modifier.size(50.dp).alpha(shown))
+        if (open) {
+            Text(
+                m.name,
+                color = if (selected) Lc.panelText else Lc.panelTextSoft,
+                fontFamily = Inter,
+                fontSize = 15.sp,
+                maxLines = 1,
+                overflow = TextOverflow.MiddleEllipsis,
+                modifier = Modifier.weight(1f).padding(start = 17.dp).alpha(shown),
+            )
+            Box(if (selected) Modifier.offset(x = 5.9.dp) else Modifier) {
+                BarButton(MdIcon.MoreVert, "${m.name} more menu", size = 40.dp, tint = Lc.panelText) {
+                    vm.selectMask(m.id)
+                    menu = true
+                }
+                CalloutMenu(expanded = menu, onDismiss = { menu = false }) {
+                    CalloutMenuItem("Add to \"${m.name}\"", onClick = {
+                        menu = false
+                        ed.maskPicker = "add"
+                    }) { drawMaskOpIcon(false, it) }
+                    CalloutMenuItem("Subtract from \"${m.name}\"", onClick = {
+                        menu = false
+                        ed.maskPicker = "subtract"
+                    }) { drawMaskOpIcon(true, it) }
+                    CalloutDivider()
+                    CalloutMenuItem(if (m.visible) "Hide" else "Show", onClick = {
+                        menu = false
+                        vm.toggleMaskVisible()
+                    }) { drawEye(it, struck = m.visible) }
+                    CalloutMenuItem("Rename", onClick = {
+                        menu = false
+                        renaming = true
+                    }) { drawRenameIcon(it) }
+                    CalloutMenuItem("Duplicate", onClick = {
+                        menu = false
+                        vm.maskCommand("mask.duplicate")
+                    }) { drawDuplicateIcon(it) }
+                    CalloutDivider()
+                    CalloutMenuItem("Invert Mask", onClick = {
+                        menu = false
+                        vm.maskCommand("mask.invert")
+                    }) { drawInvertIcon(it) }
+                    CalloutMenuItem("Duplicate & Invert Mask", onClick = {
+                        menu = false
+                        vm.duplicateInvertedMask()
+                    }) { drawDuplicateInvertIcon(it) }
+                    CalloutDivider()
+                    CalloutMenuItem("Delete", onClick = {
+                        menu = false
+                        vm.maskCommand("mask.delete")
+                    }) { drawTrashIcon(it) }
+                }
+            }
+        }
+    }
+    if (renaming) {
+        RenameMaskDialog(m.name, onDismiss = { renaming = false }) { name ->
+            renaming = false
+            vm.renameMask(name)
+        }
+    }
+}
+
+/**
+ * The edited mask's parts under its picture, the newest first (the first marked ↳), then adding to
+ * it or subtracting from it: closed, a button that offers both; open, a row for each.
+ */
+@Composable
+private fun MaskPartRows(vm: AppViewModel, ed: EditorState, m: MaskInfo, open: Boolean) {
+    m.components.indices.reversed().forEachIndexed { row, i ->
+        val part = m.components[i]
+        val selected = ed.maskPart == i
+        var menu by remember(m.id, i) { mutableStateOf(false) }
+        var renaming by remember(m.id, i) { mutableStateOf(false) }
+        val name = partName(m, i)
+        Row(
+            Modifier
+                .padding(top = if (row == 0) 3.9.dp else 0.dp)
+                .fillMaxWidth()
+                .height(if (open) 49.6.dp else 47.7.dp)
+                .clickable(role = Role.Button) { vm.selectMaskPart(i) }
+                .semantics { contentDescription = name },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // the ↳ beside the first, the square 21 dp in (closed) or 30 dp (open)
+            Box(Modifier.width(if (open) 30.2.dp else 21.4.dp).fillMaxHeight(), contentAlignment = Alignment.CenterEnd) {
+                if (row == 0) Text("↳", color = nestedArrow, fontFamily = Inter, fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.padding(end = 4.dp, bottom = 12.dp))
+            }
+            PartSquare(part.kind, part.op, part.hidden, selected)
+            if (open) {
+                Text(
+                    name,
+                    color = if (part.hidden) Lc.panelText.copy(alpha = 0.45f) else Lc.panelText,
+                    fontFamily = Inter,
+                    fontSize = 15.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.MiddleEllipsis,
+                    modifier = Modifier.weight(1f).padding(start = 10.8.dp),
+                )
+                // past the card's edge to the screen's, as the reference's
+                Box(Modifier.offset(x = 5.9.dp)) {
+                    BarButton(MdIcon.MoreVert, "$name more menu", size = 32.dp, iconSize = 22.dp, tint = Lc.panelText) {
+                        vm.selectMaskPart(i)
+                        menu = true
+                    }
+                    CalloutMenu(expanded = menu, onDismiss = { menu = false }) {
+                        CalloutMenuItem(if (part.hidden) "Show" else "Hide", onClick = {
+                            menu = false
+                            vm.partCommand(i, "hide")
+                        }) { drawEye(it, struck = !part.hidden) }
+                        CalloutMenuItem("Rename", onClick = {
+                            menu = false
+                            renaming = true
+                        }) { drawRenameIcon(it) }
+                        CalloutMenuItem("Duplicate", onClick = {
+                            menu = false
+                            vm.duplicatePart(i, "$name Copy")
+                        }) { drawDuplicateIcon(it) }
+                        // the first part can't subtract (there'd be nothing to take from)
+                        val subtracting = part.op == "subtract"
+                        CalloutMenuItem(if (subtracting) "Convert to Add" else "Convert to Subtract", enabled = i > 0, onClick = {
+                            menu = false
+                            vm.partOp(i, if (subtracting) "add" else "subtract")
+                        }) { drawMaskOpIcon(!subtracting, it) }
+                        CalloutMenuItem("Delete", onClick = {
+                            menu = false
+                            vm.partCommand(i, "delete")
+                        }) { drawTrashIcon(it) }
                     }
                 }
-                if (renaming) {
-                    NameDialog("Mask name", "Rename", initial = m.name, onDismiss = { renaming = false }) { name ->
-                        renaming = false
-                        vm.renameMask(name)
+            }
+        }
+        if (renaming) {
+            RenameMaskDialog(name, onDismiss = { renaming = false }) { new ->
+                renaming = false
+                vm.renamePart(i, new)
+            }
+        }
+    }
+    if (open) {
+        Spacer(Modifier.height(7.5.dp))
+        AddSubtractRow(ed, m, subtract = false)
+        AddSubtractRow(ed, m, subtract = true)
+    } else {
+        var choose by remember { mutableStateOf(false) }
+        Box(Modifier.padding(start = 17.5.dp)) {
+            Box(
+                Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .clickable(role = Role.Button) { choose = true }
+                    .semantics { contentDescription = "Add to or subtract from the mask" },
+                contentAlignment = Alignment.Center,
+            ) {
+                Canvas(Modifier.size(26.dp)) { drawAddSubtract() }
+            }
+            LcMenu(expanded = choose, onDismiss = { choose = false }) {
+                listOf(false, true).forEach { subtract ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .clickable(role = Role.Button) {
+                                choose = false
+                                ed.maskPicker = if (subtract) "subtract" else "add"
+                            }
+                            .padding(end = 20.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) { Canvas(Modifier.size(22.dp)) { drawMaskOpIcon(subtract) } }
+                        Text(if (subtract) "Subtract from \"${m.name}\"" else "Add to \"${m.name}\"", color = Lc.menuText, fontFamily = Inter, fontSize = 17.sp, maxLines = 1)
                     }
                 }
             }
@@ -315,21 +530,363 @@ fun MaskColumn(vm: AppViewModel, ed: EditorState, modifier: Modifier) {
     }
 }
 
+/** The open column's Add to "Mask 1" or Subtract from "Mask 1": 37 dp, its icon 39 dp in. */
+@Composable
+private fun AddSubtractRow(ed: EditorState, m: MaskInfo, subtract: Boolean) {
+    Row(
+        Modifier.fillMaxWidth().height(37.4.dp).clickable(role = Role.Button) { ed.maskPicker = if (subtract) "subtract" else "add" }.padding(start = 39.4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Canvas(Modifier.size(19.dp)) { drawMaskOpIcon(subtract) }
+        Text(
+            if (subtract) "Subtract from \"${m.name}\"" else "Add to \"${m.name}\"",
+            color = Lc.panelText,
+            fontFamily = Inter,
+            fontSize = 15.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = 9.dp, end = 8.dp),
+        )
+    }
+}
+
+/** Add to (a + in a ring) or subtract from (a −) a mask: a square cut by the ring at its corner. */
+private fun DrawScope.drawMaskOpIcon(subtract: Boolean, tint: Color = Lc.panelText) {
+    val w = 1.5.dp.toPx()
+    val s = size.minDimension
+    val c = Offset(s * 0.68f, s * 0.68f)
+    val r = s * 0.3f
+    val square = Path().apply {
+        moveTo(c.x - r, s * 0.62f)
+        lineTo(s * 0.08f, s * 0.62f)
+        lineTo(s * 0.08f, s * 0.08f)
+        lineTo(s * 0.62f, s * 0.08f)
+        lineTo(s * 0.62f, c.y - r)
+    }
+    drawPath(square, tint, style = Stroke(w))
+    drawCircle(tint, r, c, style = Stroke(w))
+    drawLine(tint, Offset(c.x - r * 0.5f, c.y), Offset(c.x + r * 0.5f, c.y), w)
+    if (!subtract) drawLine(tint, Offset(c.x, c.y - r * 0.5f), Offset(c.x, c.y + r * 0.5f), w)
+}
+
+/** The closed column's add or subtract button, as the reference's: a white − disc, a white + disc above it to the right. */
+private fun DrawScope.drawAddSubtract() {
+    val w = 1.6.dp.toPx()
+    val s = size.minDimension
+    val r = s * 0.22f
+    val minus = Offset(s * 0.3f, s * 0.66f)
+    val plus = Offset(s * 0.68f, s * 0.34f)
+    for ((c, sign) in listOf(minus to false, plus to true)) {
+        drawCircle(Color.Black, r + 1.2.dp.toPx(), c)
+        drawCircle(Lc.panelText, r, c)
+        drawLine(Color.Black, Offset(c.x - r * 0.55f, c.y), Offset(c.x + r * 0.55f, c.y), w)
+        if (sign) drawLine(Color.Black, Offset(c.x, c.y - r * 0.55f), Offset(c.x, c.y + r * 0.55f), w)
+    }
+}
+
 /**
- * A mask's picture: what it selects white on black, in the photo's shape (a radial's soft ellipse, a
- * linear's ramp from full to none; the others their kind's icon), framed white while it's edited.
+ * A part's 40 dp square, as the reference's: its kind's icon on dark grey (hidden: an eye struck
+ * through, on black), framed blue while edited (with a small mark in its corner) or grey; a − at
+ * its right edge while it subtracts.
  */
 @Composable
-private fun MaskThumb(m: MaskInfo, photoW: Float, photoH: Float, selected: Boolean, modifier: Modifier) {
+private fun PartSquare(kind: String, op: String, hidden: Boolean, selected: Boolean) {
+    Box(Modifier.size(width = 46.dp, height = 40.dp)) {
+        Box(
+            Modifier
+                .size(40.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(if (hidden) Color.Black else Color(0xFF303030))
+                .border(if (selected) 2.dp else 1.dp, if (selected) partSelectedFrame else Lc.chevron, RoundedCornerShape(3.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (hidden) MdIcon(MdIcon.VisibilityOff, null, tint = Lc.panelText, size = 22.dp) else MaskKindIcon(kind, Modifier.size(22.dp), mono = true)
+            if (selected && !hidden) {
+                Canvas(Modifier.align(Alignment.BottomEnd).padding(3.dp).size(6.dp)) {
+                    drawPath(Path().apply {
+                        moveTo(size.width, 0f)
+                        lineTo(size.width, size.height)
+                        lineTo(0f, size.height)
+                        close()
+                    }, Lc.panelTextSoft)
+                }
+            }
+        }
+        if (!hidden && (op == "subtract" || op == "intersect")) {
+            Canvas(Modifier.align(Alignment.CenterEnd).size(13.dp)) {
+                val r = size.minDimension / 2
+                drawCircle(Color(0xFF2B2B2B), r)
+                drawCircle(Lc.panelTextSoft, r - 0.75.dp.toPx(), style = Stroke(1.5.dp.toPx()))
+                drawLine(Color.White, Offset(r - r * 0.5f, r), Offset(r + r * 0.5f, r), 1.6.dp.toPx())
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------------------------------ the part's bar
+
+/** The left bar's grey and its value boxes, as the reference's. */
+private val barBox = Color.Black
+private val barDivider = Color(0xFF6A6A6A)
+
+/**
+ * The edited part's tools, as the reference's bar against the left edge (56 dp of the column's grey,
+ * 8 dp corners at its right, its foot level with the column's): a colour or luminance range's
+ * Pick (its dropper filled with what it picked) and a colour range's Refine; a radial's Feather; a
+ * brush's Erase, Size, Feather and Flow; then a line, Invert and Delete. A value's box opens a
+ * slider beside the bar. The mask itself edited (no part): Delete.
+ */
+@Composable
+fun MaskPartBar(vm: AppViewModel, ed: EditorState, modifier: Modifier) {
+    val mask = ed.masks.firstOrNull { it.id == ed.selectedMask } ?: return
+    val i = ed.maskPart
+    val part = mask.components.getOrNull(i)
+    // which value's slider is open beside the bar
+    var editing by remember(mask.id, i) { mutableStateOf<String?>(null) }
+    Row(modifier, verticalAlignment = Alignment.Bottom) {
+        Column(
+            Modifier
+                .width(if (part == null) 63.7.dp else 56.dp)
+                .clip(RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp))
+                .background(Lc.masksColumn)
+                .padding(vertical = 7.8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            if (part == null) {
+                BarIcon(LcIcon.Trash, "Delete") { vm.maskCommand("mask.delete") }
+                return@Column
+            }
+            val shape = runCatching { JSONObject(part.shape) }.getOrDefault(JSONObject())
+            var tools = true
+            when (part.kind) {
+                "colorRange", "luminanceRange" -> {
+                    BarBox("Pick", on = false, onClick = vm::repickPart) {
+                        Canvas(Modifier.size(30.dp)) { drawDropper(pickedColor(part.kind, shape) ?: Lc.panelText) }
+                    }
+                    if (part.kind == "colorRange") {
+                        val v = ed.liveShape["refine"] ?: shape.optDouble("refine", 50.0)
+                        BarGap()
+                        BarValue("Refine", v, editing == "refine") { editing = if (editing == "refine") null else "refine" }
+                    }
+                }
+                "radial" -> {
+                    val v = ed.liveShape["feather"] ?: shape.optDouble("feather", 50.0)
+                    BarValue("Feather", v, editing == "feather") { editing = if (editing == "feather") null else "feather" }
+                }
+                "brush" -> {
+                    BarBox(if (ed.maskErase) "Paint" else "Erase", on = ed.maskErase, onClick = { ed.maskErase = !ed.maskErase }) {
+                        LcIcon(if (ed.maskErase) LcIcon.PencilOff else LcIcon.Pencil, null, tint = Lc.panelText, size = 24.dp)
+                    }
+                    BarGap()
+                    BarValue("Size", ed.maskBrushSize * 1000.0, editing == "size") { editing = if (editing == "size") null else "size" }
+                    BarGap()
+                    BarValue("Feather", ed.maskBrushFeather.toDouble(), editing == "brushFeather") { editing = if (editing == "brushFeather") null else "brushFeather" }
+                    BarGap()
+                    BarValue("Flow", ed.maskBrushFlow.toDouble(), editing == "flow") { editing = if (editing == "flow") null else "flow" }
+                }
+                else -> tools = false
+            }
+            // the reference's line between the part's own tools and Invert and Delete (which touch)
+            if (tools) {
+                BarGap()
+                Box(Modifier.size(width = 22.dp, height = 1.dp).background(barDivider))
+                BarGap()
+            }
+            Box(Modifier.size(48.dp).clickable(role = Role.Button) { vm.partCommand(i, "invert") }.semantics { contentDescription = "Invert" }, contentAlignment = Alignment.Center) {
+                Canvas(Modifier.size(30.dp)) { drawInvertIcon(if (part.invert) Lc.panelText else Lc.chevron) }
+            }
+            BarIcon(LcIcon.Trash, "Delete") { vm.partCommand(i, "delete") }
+        }
+        val open = editing
+        if (open != null && part != null) {
+            val shape = runCatching { JSONObject(part.shape) }.getOrDefault(JSONObject())
+            when (open) {
+                // the point toward the value's box: the lowest box's middle is 144.4 dp over the bar's foot, each above it 55.8 more
+                "refine", "feather" -> BarSlider(
+                    ed,
+                    if (open == "refine") "Refine" else "Feather",
+                    ed.liveShape[open] ?: shape.optDouble(open, 50.0),
+                    if (open == "refine") 1.0 else 0.0,
+                    100.0,
+                    pointFromBottom = 144.4.dp,
+                    signed = open == "refine",
+                    onChange = { vm.setShapeValue(open, it) },
+                    onDone = vm::shapeDone,
+                )
+                "size" -> BarSlider(ed, "Size", ed.maskBrushSize * 1000.0, 2.0, 100.0, 256.dp, onChange = { ed.maskBrushSize = (it / 1000).toFloat() }, onDone = {})
+                "brushFeather" -> BarSlider(ed, "Feather", ed.maskBrushFeather.toDouble(), 0.0, 100.0, 200.2.dp, onChange = { ed.maskBrushFeather = it.toFloat() }, onDone = {})
+                "flow" -> BarSlider(ed, "Flow", ed.maskBrushFlow.toDouble(), 1.0, 100.0, 144.4.dp, onChange = { ed.maskBrushFlow = it.toFloat() }, onDone = {})
+            }
+        }
+    }
+}
+
+/** The 7.8 dp between the bar's boxes. */
+@Composable
+private fun BarGap() = Spacer(Modifier.height(7.8.dp))
+
+/** The bar's Invert, as the reference's: a grey square cut corner to corner, a disc in it dark on one side of the cut. */
+fun DrawScope.drawInvertIcon(tint: Color) {
+    val s = size.minDimension
+    val inset = s * 0.12f
+    val side = s - 2 * inset
+    drawRect(tint, Offset(inset, inset + side * 0.1f), Size(side, side * 0.8f))
+    val c = center
+    val r = side * 0.3f
+    // the disc's half above the cut (bottom left to top right) dark, the rest the square's grey
+    val half = Path().apply {
+        moveTo(c.x - r * 1.2f, c.y + r * 1.2f)
+        lineTo(c.x + r * 1.2f, c.y - r * 1.2f)
+        lineTo(c.x - r * 1.2f, c.y - r * 1.2f)
+        close()
+    }
+    clipPath(half) { drawCircle(Lc.masksColumn, r, c) }
+    drawLine(Lc.masksColumn, Offset(inset, inset + side * 0.9f), Offset(inset + side, inset + side * 0.1f), 1.6.dp.toPx())
+}
+
+/** A tool of the bar in its 48 dp box (black, a 1 dp grey edge; [on]: its edge [edge]). */
+@Composable
+private fun BarBox(description: String, on: Boolean, edge: Color = Lc.panelText, onClick: () -> Unit, content: @Composable () -> Unit) {
+    Box(
+        Modifier
+            .size(48.dp)
+            .clip(RoundedCornerShape(5.dp))
+            .background(barBox)
+            .border(1.dp, if (on) edge else Lc.panelButtonBorder, RoundedCornerShape(5.dp))
+            .clickable(role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = description },
+        contentAlignment = Alignment.Center,
+    ) { content() }
+}
+
+/** A value of the bar: its number in a box (open: its edge blue). */
+@Composable
+private fun BarValue(label: String, value: Double, open: Boolean, onClick: () -> Unit) {
+    BarBox("$label ${value.roundToInt()}", on = open, edge = Lc.primaryBlue, onClick = onClick) {
+        Text("${value.roundToInt()}", color = Lc.panelText, fontFamily = Inter, fontSize = 16.sp, maxLines = 1)
+    }
+}
+
+/** A tool of the bar with no box: its icon in 48 dp. */
+@Composable
+private fun BarIcon(icon: LcIcon, description: String, tint: Color = Lc.panelText, onClick: () -> Unit) {
+    Box(Modifier.size(48.dp).clickable(role = Role.Button, onClick = onClick).semantics { contentDescription = description }, contentAlignment = Alignment.Center) {
+        LcIcon(icon, null, tint = tint, size = 28.dp)
+    }
+}
+
+/** The bar's Pick, as the reference's: a dropper from the top right down to the left, a disc of [fill] (what the part picked) over its middle. */
+private fun DrawScope.drawDropper(fill: Color) {
+    val s = size.minDimension
+    val stroke = Lc.panelTextSoft
+    // the barrel (hollow), its tip at the bottom left, the bulb at the top right
+    drawLine(stroke, Offset(s * 0.66f, s * 0.3f), Offset(s * 0.16f, s * 0.8f), 4.6.dp.toPx(), cap = StrokeCap.Round)
+    drawLine(barBox, Offset(s * 0.62f, s * 0.34f), Offset(s * 0.2f, s * 0.76f), 1.8.dp.toPx(), cap = StrokeCap.Round)
+    drawLine(stroke, Offset(s * 0.84f, s * 0.12f), Offset(s * 0.66f, s * 0.3f), 4.2.dp.toPx(), cap = StrokeCap.Round)
+    val c = Offset(s * 0.62f, s * 0.6f)
+    val r = s * 0.29f
+    drawCircle(barBox, r + 1.dp.toPx(), c)
+    drawCircle(Color.White, r, c)
+    drawCircle(fill, r - 1.6.dp.toPx(), c)
+}
+
+/** The value slider's track above its ring (below it, the ring's white). */
+private val barTrackAbove = Color(0xFF929292)
+
+/**
+ * A value's slider beside the bar, as the reference's: 31 x 251 dp of the column's grey with a 1 dp
+ * light edge, 20 dp right of the bar and 5 dp below its foot, a point on its left toward the
+ * value's box ([pointFromBottom]: its middle above the bar's foot); its track upright (the least at
+ * the foot), white below the ring and grey above it, broken round the ring; drag it (or tap on the
+ * track) to set it. While it's open its name and value stand in the pill under the top bar.
+ */
+@Composable
+private fun BarSlider(ed: EditorState, label: String, value: Double, min: Double, max: Double, pointFromBottom: Dp, signed: Boolean = false, onChange: (Double) -> Unit, onDone: () -> Unit) {
+    val change by rememberUpdatedState(onChange)
+    val done by rememberUpdatedState(onDone)
+    val current by rememberUpdatedState(value)
+    fun text(v: Double) = "$label: ${if (signed && v.roundToInt() > 0) "+" else ""}${v.roundToInt()}"
+    // the pill under the top bar, as long as the slider's open
+    SideEffect { ed.barPill = text(value) }
+    DisposableEffect(Unit) { onDispose { ed.barPill = null } }
+    val edge = Lc.panelText
+    Canvas(
+        Modifier
+            .padding(start = 12.7.dp)
+            .offset(y = 4.8.dp)
+            .size(width = 38.9.dp, height = 251.dp)
+            .pointerInput(min, max) {
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    val top = 20.dp.toPx()
+                    val travel = (size.height - top - 22.8.dp.toPx()).coerceAtLeast(1f)
+                    fun at(y: Float) = (min + (1 - ((y - top) / travel).coerceIn(0f, 1f)) * (max - min)).roundToInt().toDouble()
+                    down.consume()
+                    change(at(down.position.y))
+                    while (true) {
+                        val ev = awaitPointerEvent()
+                        val c = ev.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!c.pressed) break
+                        c.consume()
+                        change(at(c.position.y))
+                    }
+                    done()
+                }
+            }
+            .semantics { contentDescription = "$label ${current.roundToInt()}" },
+    ) {
+        // the popup (right of the point) and its point toward the box
+        val point = 7.8.dp.toPx()
+        val left = point
+        val w = size.width - left
+        val corner = CornerRadius(4.dp.toPx())
+        val py = size.height - (pointFromBottom + 4.8.dp).toPx()
+        drawRoundRect(Lc.masksColumn, Offset(left, 0f), Size(w, size.height), corner)
+        drawRoundRect(edge, Offset(left, 0f), Size(w, size.height), corner, style = Stroke(1.dp.toPx()))
+        val tip = Path().apply {
+            moveTo(left + 1.dp.toPx(), py - 7.dp.toPx())
+            lineTo(0f, py)
+            lineTo(left + 1.dp.toPx(), py + 7.dp.toPx())
+            close()
+        }
+        drawPath(tip, Lc.masksColumn)
+        drawLine(edge, Offset(left, py - 7.dp.toPx()), Offset(0f, py), 1.dp.toPx())
+        drawLine(edge, Offset(0f, py), Offset(left, py + 7.dp.toPx()), 1.dp.toPx())
+        // the track, broken round the ring
+        val top = 20.dp.toPx()
+        val bottom = size.height - 22.8.dp.toPx()
+        val x = left + w / 2
+        val t = ((current - min) / (max - min)).coerceIn(0.0, 1.0).toFloat()
+        val y = top + (1 - t) * (bottom - top)
+        val ring = 9.dp.toPx()
+        val gap = ring + 4.3.dp.toPx()
+        if (y - gap > top) drawLine(barTrackAbove, Offset(x, top), Offset(x, y - gap), 2.dp.toPx())
+        if (y + gap < bottom) drawLine(edge, Offset(x, y + gap), Offset(x, bottom), 2.dp.toPx())
+        drawCircle(edge, ring, Offset(x, y), style = Stroke(2.4.dp.toPx()))
+    }
+}
+
+/**
+ * A mask's picture: what it selects white on black, in the photo's shape (its render; until there is
+ * one a radial's soft ellipse, a linear's ramp from full to none, the others their kind's icon),
+ * framed while it's edited.
+ */
+@Composable
+private fun MaskThumb(m: MaskInfo, photoW: Float, photoH: Float, frame: Color?, picture: ImageBitmap?, modifier: Modifier) {
     val s = shapeOf(m)
     Box(
         modifier
             .clip(RoundedCornerShape(2.dp))
             .background(Color.Black)
-            // the reference's frames: a 2 dp blue one for the mask edited, 1 dp grey otherwise
-            .border(if (selected) 2.dp else 1.dp, if (selected) Color(0xFF378EF0) else Lc.chevron, RoundedCornerShape(2.dp)),
+            // the reference's frames: 2 dp for the mask edited (blue, or light while one of its parts is), 1 dp grey otherwise
+            .border(if (frame != null) 2.dp else 1.dp, frame ?: Lc.chevron, RoundedCornerShape(2.dp)),
         contentAlignment = Alignment.Center,
     ) {
+        // what it selects, white on black, as rendered (the reference's); drawn from its shape until then
+        if (picture != null) {
+            Image(picture, null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().padding(3.dp))
+            return@Box
+        }
         when (m.kind) {
             "radial", "linear" -> Canvas(Modifier.fillMaxSize().padding(3.dp)) {
                 val w = photoW.coerceAtLeast(1f)
@@ -433,7 +990,7 @@ fun MasksSheet(vm: AppViewModel, ed: EditorState, onDismiss: () -> Unit) {
 
 // --------------------------------------------------------------------------------------- sheet
 
-/** Masking's panel for the edited mask: its own settings, or a section's local sliders. */
+/** Masking's panel for the edited mask: a section's local sliders (its parts' own tools are on [MaskPartBar]). */
 @Composable
 fun MaskSheet(vm: AppViewModel, ed: EditorState, modifier: Modifier) {
     val mask = ed.masks.firstOrNull { it.id == ed.selectedMask }
@@ -441,19 +998,6 @@ fun MaskSheet(vm: AppViewModel, ed: EditorState, modifier: Modifier) {
         LazyColumn(Modifier.sheetList(), contentPadding = PaddingValues(top = 6.dp, bottom = 16.dp)) {
             when {
                 mask == null -> {}
-                ed.maskSection == "mask" -> {
-                    item(key = "title") { MaskSheetTitle(mask.name) }
-                    item(key = "parts") { MaskParts(ed, mask) }
-                    item(key = "kind") { MaskShapeControls(vm, ed, mask) }
-                    item(key = "actions") {
-                        // wrapped onto a second line when the panel is narrow (sideways)
-                        FlowRow(Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            PanelButton("Invert", LcIcon.Invert, active = mask.invert) { vm.maskCommand("mask.invert") }
-                            PanelButton("Duplicate", LcIcon.Versions) { vm.maskCommand("mask.duplicate") }
-                            PanelButton("Delete", LcIcon.Trash) { vm.maskCommand("mask.delete") }
-                        }
-                    }
-                }
                 else -> {
                     val section = MaskSection.entries.firstOrNull { it.name.lowercase() == ed.maskSection } ?: MaskSection.LIGHT
                     val adjust = adjustOf(mask)
@@ -479,69 +1023,6 @@ fun MaskSheet(vm: AppViewModel, ed: EditorState, modifier: Modifier) {
                 }
             }
         }
-    }
-}
-
-/** The mask's parts (tap one to edit it; shown once there are two), then add or subtract another, as the reference's. */
-@Composable
-private fun MaskParts(ed: EditorState, mask: MaskInfo) {
-    LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (mask.components.size > 1) {
-            itemsIndexed(mask.components) { i, part ->
-                val sign = when (part.op) {
-                    "subtract" -> "− "
-                    "intersect" -> "∩ "
-                    else -> ""
-                }
-                PanelButton(sign + kindLabel(part.kind), maskIcon(part.kind), active = i == ed.maskPart) { ed.maskPart = i }
-            }
-        }
-        item(key = "add") { PanelButton("Add", LcIcon.Plus) { ed.maskPicker = "add" } }
-        item(key = "subtract") { PanelButton("Subtract", LcIcon.Minus) { ed.maskPicker = "subtract" } }
-    }
-}
-
-@Composable
-private fun MaskSheetTitle(text: String) {
-    Text(text, color = Lc.text, fontFamily = Inter, fontSize = 15.sp, modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 6.dp))
-}
-
-/** What a mask's kind needs besides the photo: the brush, a range's bounds, colour sampling. */
-@Composable
-private fun MaskShapeControls(vm: AppViewModel, ed: EditorState, mask: MaskInfo) {
-    when (partKind(mask, ed.maskPart)) {
-        "brush" -> Column {
-            Row(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PanelButton("Paint", LcIcon.Pencil, active = !ed.maskErase) { ed.maskErase = false }
-                PanelButton("Erase", LcIcon.Close, active = ed.maskErase) { ed.maskErase = true }
-            }
-            val size = DevelopControl("mask.brushSize", "Size", "", "", 2.0, 100.0, 30.0, 1.0, 0u, ed.maskBrushSize * 1000.0, SliderTrack.Plain)
-            DevelopSlider(size, onChange = { ed.maskBrushSize = (it / 1000).toFloat() }, onFinished = {}, onReset = { ed.maskBrushSize = 0.03f })
-            val feather = DevelopControl("mask.brushFeather", "Feather", "", "", 0.0, 100.0, 50.0, 1.0, 0u, ed.maskBrushFeather.toDouble(), SliderTrack.Plain)
-            DevelopSlider(feather, onChange = { ed.maskBrushFeather = it.toFloat() }, onFinished = {}, onReset = { ed.maskBrushFeather = 50f })
-            val flow = DevelopControl("mask.brushFlow", "Flow", "", "", 1.0, 100.0, 100.0, 1.0, 0u, ed.maskBrushFlow.toDouble(), SliderTrack.Plain)
-            DevelopSlider(flow, onChange = { ed.maskBrushFlow = it.toFloat() }, onFinished = {}, onReset = { ed.maskBrushFlow = 100f })
-        }
-        "luminanceRange" -> {
-            val shape = partShape(mask, ed.maskPart)
-            Column {
-                listOf("lo" to "Darkest", "hi" to "Lightest").forEach { (key, label) ->
-                    val c = DevelopControl("mask.$key", label, "", "", 0.0, 100.0, if (key == "lo") 60.0 else 100.0, 1.0, 0u, (ed.liveShape[key] ?: shape.optDouble(key, 0.0)) * 100, SliderTrack.Gradient("#101010", "#f0f0f0"))
-                    DevelopSlider(c, onChange = { vm.setShapeValue(key, it / 100) }, onFinished = vm::shapeDone, onReset = {})
-                }
-            }
-        }
-        "colorRange" -> {
-            val shape = partShape(mask, ed.maskPart)
-            val c = DevelopControl("mask.refine", "Refine", "", "", 0.0, 100.0, 50.0, 1.0, 0u, ed.liveShape["refine"] ?: shape.optDouble("refine", 50.0), SliderTrack.Plain)
-            DevelopSlider(c, onChange = { vm.setShapeValue("refine", it) }, onFinished = vm::shapeDone, onReset = {})
-        }
-        "radial" -> {
-            val shape = partShape(mask, ed.maskPart)
-            val c = DevelopControl("mask.feather", "Feather", "", "", 0.0, 100.0, 50.0, 1.0, 0u, ed.liveShape["feather"] ?: shape.optDouble("feather", 50.0), SliderTrack.Plain)
-            DevelopSlider(c, onChange = { vm.setShapeValue("feather", it) }, onFinished = vm::shapeDone, onReset = {})
-        }
-        else -> {}
     }
 }
 
@@ -673,7 +1154,8 @@ private fun OptionDivider() = Box(Modifier.padding(start = 32.dp, end = 32.dp, t
 
 /**
  * The selected mask on the photo: a radial gradient's ellipse and handles, a linear gradient's
- * lines, or the brush (paint or erase with a finger), or a tap that samples a colour.
+ * lines, or the brush (paint or erase with a finger); a colour or luminance range's marker where it
+ * was picked (the reference's: a disc of blues in a white ring).
  */
 @Composable
 fun MaskOverlay(vm: AppViewModel, ed: EditorState, mask: MaskInfo, geometry: ViewGeometry, imageSize: IntSize, modifier: Modifier) {
@@ -736,19 +1218,6 @@ fun MaskOverlay(vm: AppViewModel, ed: EditorState, mask: MaskInfo, geometry: Vie
                         stroke = emptyList()
                         vm.brushStroke(path.map { map.photo(it) })
                     }
-                    "colorRange" -> {
-                        var moved = false
-                        while (true) {
-                            val ev = awaitPointerEvent()
-                            val c = ev.changes.firstOrNull() ?: break
-                            if (!c.pressed) break
-                            if ((c.position - down.position).getDistance() > viewConfiguration.touchSlop) moved = true
-                        }
-                        if (!moved) {
-                            val (x, y) = map.photo(down.position)
-                            vm.sampleColor(x, y)
-                        }
-                    }
                     "radial", "linear" -> {
                         val handles = shapeHandles(kind, shape, map, geometry)
                         val near = handles.withIndex().minByOrNull { (_, h) -> (h - down.position).getDistance() }
@@ -778,6 +1247,14 @@ fun MaskOverlay(vm: AppViewModel, ed: EditorState, mask: MaskInfo, geometry: Vie
         val current = JSONObject(shape.toString()).also { s -> live.forEach { (k, v) -> s.put(k, v) } }
         if (tools) {
             ed.liveShapeJson?.let { j -> runCatching { JSONObject(j) }.getOrNull() }?.let { drawShape(kind, it, map, geometry) } ?: drawShape(kind, current, map, geometry)
+            // the range parts' markers, where each was picked (an area: its middle)
+            mask.components.forEachIndexed { i, p ->
+                if (p.hidden || (p.kind != "colorRange" && p.kind != "luminanceRange")) return@forEachIndexed
+                val picked = runCatching { JSONObject(p.shape).optJSONArray("picked") }.getOrNull() ?: return@forEachIndexed
+                val pts = (0 until picked.length()).mapNotNull { k -> picked.optJSONObject(k)?.let { it.optDouble("x") to it.optDouble("y") } }
+                if (pts.isEmpty()) return@forEachIndexed
+                drawRangeMarker(map.screen(pts.map { it.first }.average(), pts.map { it.second }.average()), i == part)
+            }
         }
         if (stroke.isNotEmpty()) {
             val r = map.radius(ed.maskBrushSize.toDouble())
@@ -789,6 +1266,19 @@ fun MaskOverlay(vm: AppViewModel, ed: EditorState, mask: MaskInfo, geometry: Vie
             drawPath(path, color, style = Stroke(width = 2 * r, cap = StrokeCap.Round, join = StrokeJoin.Round))
             if (stroke.size == 1) drawCircle(color, r, stroke[0])
         }
+    }
+}
+
+/** The blues of a range part's marker, going round. */
+private val markerBlues = listOf(0xFF2F86EA, 0xFF4A97EE, 0xFF6AA9F1, 0xFF8CBDF4, 0xFFAECFF7, 0xFFCFE2FA).map { Color(it) }
+
+/** A range part's marker at [c]: a disc of blues (greys while another part is edited) in a 2 dp white ring, 19 dp across. */
+private fun DrawScope.drawRangeMarker(c: Offset, edited: Boolean) {
+    val r = 7.7.dp.toPx()
+    drawCircle(Color.White, r + 2.dp.toPx(), c)
+    markerBlues.forEachIndexed { k, blue ->
+        val color = if (edited) blue else Color(blue.red * 0.3f + blue.green * 0.59f + blue.blue * 0.11f, blue.red * 0.3f + blue.green * 0.59f + blue.blue * 0.11f, blue.red * 0.3f + blue.green * 0.59f + blue.blue * 0.11f)
+        drawArc(color, -90f + k * 60f, 60f, true, Offset(c.x - r, c.y - r), Size(2 * r, 2 * r))
     }
 }
 
@@ -966,4 +1456,225 @@ private fun MaskTint(hue: Double, sat: Double, onChange: (Double, Double) -> Uni
             }
         }
     }
+}
+
+// ------------------------------------------------------------------------------- callout menu, rename
+
+/**
+ * A menu as the reference's masks column opens one beside a ⋮: its grey with a 1 dp lighter edge
+ * and 5 dp corners, 10 dp to the left of the button, level with it (kept on the screen), a point on
+ * its right side toward the button.
+ */
+@Composable
+fun CalloutMenu(expanded: Boolean, onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    if (!expanded) return
+    val gap = with(LocalDensity.current) { 10.dp.roundToPx() }
+    val position = remember(gap) {
+        object : PopupPositionProvider {
+            override fun calculatePosition(anchorBounds: IntRect, windowSize: IntSize, layoutDirection: LayoutDirection, popupContentSize: IntSize): IntOffset {
+                val x = (anchorBounds.left - gap - popupContentSize.width).coerceAtLeast(0)
+                val y = (anchorBounds.center.y - popupContentSize.height / 2).coerceIn(0, (windowSize.height - popupContentSize.height).coerceAtLeast(0))
+                return IntOffset(x, y)
+            }
+        }
+    }
+    Popup(popupPositionProvider = position, onDismissRequest = onDismiss, properties = PopupProperties(focusable = true)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // as wide as its widest row (at least 195 dp), the rows filling it
+            Column(
+                Modifier
+                    .width(IntrinsicSize.Max)
+                    .widthIn(min = 195.dp)
+                    .clip(RoundedCornerShape(5.dp))
+                    .background(Lc.menu)
+                    .border(1.dp, Lc.menuEdge, RoundedCornerShape(5.dp))
+                    .padding(vertical = 1.dp),
+                content = content,
+            )
+            // the point, its base over the menu's edge
+            Canvas(Modifier.offset(x = (-1).dp).size(width = 9.dp, height = 16.dp)) {
+                val point = Path().apply {
+                    moveTo(0f, 0f)
+                    lineTo(size.width, size.height / 2)
+                    lineTo(0f, size.height)
+                    close()
+                }
+                drawPath(point, Lc.menu)
+                val edge = Lc.menuEdge
+                val w = 1.dp.toPx()
+                drawLine(edge, Offset(0f, 0f), Offset(size.width, size.height / 2), w)
+                drawLine(edge, Offset(size.width, size.height / 2), Offset(0f, size.height), w)
+            }
+        }
+    }
+}
+
+/** The line between a [CalloutMenu]'s groups: 1 dp, 9 dp in from each side. */
+@Composable
+fun CalloutDivider() = Box(Modifier.padding(horizontal = 9.dp).fillMaxWidth().height(1.dp).background(Lc.menuEdge))
+
+/** Duplicate & Invert Mask: the invert icon over a square with a + at its corner. */
+fun DrawScope.drawDuplicateInvertIcon(tint: Color) {
+    val s = size.minDimension
+    val w = 1.6.dp.toPx()
+    drawRect(tint, Offset(s * 0.08f, s * 0.08f), Size(s * 0.6f, s * 0.6f), style = Stroke(w))
+    drawRect(tint, Offset(s * 0.28f, s * 0.28f), Size(s * 0.58f, s * 0.5f))
+    drawCircle(Lc.menu, s * 0.14f, Offset(s * 0.5f, s * 0.53f))
+    val c = Offset(s * 0.78f, s * 0.78f)
+    drawCircle(Lc.menu, s * 0.2f, c)
+    drawLine(tint, Offset(c.x - s * 0.14f, c.y), Offset(c.x + s * 0.14f, c.y), w)
+    drawLine(tint, Offset(c.x, c.y - s * 0.14f), Offset(c.x, c.y + s * 0.14f), w)
+}
+
+/** A row of [CalloutMenu]: 48 dp, its icon 13 dp in, its words at 47 dp; faint while it can't be used. */
+@Composable
+fun CalloutMenuItem(text: String, enabled: Boolean = true, onClick: () -> Unit, icon: DrawScope.(Color) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(48.dp)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .alpha(if (enabled) 1f else 0.3f)
+            .padding(start = 13.dp, end = 24.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Canvas(Modifier.size(22.dp)) { icon(Lc.menuIcon) }
+        Spacer(Modifier.width(12.4.dp))
+        Text(text, color = Lc.menuText, fontFamily = Inter, fontSize = 16.sp, maxLines = 1)
+    }
+}
+
+/** An eye, struck through when [struck] (Hide; open: Show). */
+fun DrawScope.drawEye(tint: Color, struck: Boolean) {
+    val s = size.minDimension
+    val w = 1.6.dp.toPx()
+    val eye = Path().apply {
+        moveTo(s * 0.06f, s * 0.5f)
+        quadraticTo(s * 0.5f, s * 0.08f, s * 0.94f, s * 0.5f)
+        quadraticTo(s * 0.5f, s * 0.92f, s * 0.06f, s * 0.5f)
+        close()
+    }
+    drawPath(eye, tint, style = Stroke(w))
+    drawCircle(tint, s * 0.15f, center, style = Stroke(w))
+    if (struck) drawLine(tint, Offset(s * 0.14f, s * 0.12f), Offset(s * 0.86f, s * 0.88f), w)
+}
+
+/** Rename: an A and a text cursor. */
+fun DrawScope.drawRenameIcon(tint: Color) {
+    val s = size.minDimension
+    val w = 1.6.dp.toPx()
+    drawLine(tint, Offset(s * 0.06f, s * 0.86f), Offset(s * 0.34f, s * 0.12f), w)
+    drawLine(tint, Offset(s * 0.34f, s * 0.12f), Offset(s * 0.62f, s * 0.86f), w)
+    drawLine(tint, Offset(s * 0.17f, s * 0.6f), Offset(s * 0.51f, s * 0.6f), w)
+    drawLine(tint, Offset(s * 0.86f, s * 0.06f), Offset(s * 0.86f, s * 0.94f), w)
+}
+
+/** Duplicate: a square behind another with a + in it. */
+fun DrawScope.drawDuplicateIcon(tint: Color) {
+    val s = size.minDimension
+    val w = 1.6.dp.toPx()
+    val back = Path().apply {
+        moveTo(s * 0.26f, s * 0.08f)
+        lineTo(s * 0.08f, s * 0.08f)
+        lineTo(s * 0.08f, s * 0.66f)
+        lineTo(s * 0.26f, s * 0.66f)
+    }
+    drawPath(back, tint, style = Stroke(w))
+    drawLine(tint, Offset(s * 0.08f, s * 0.08f), Offset(s * 0.66f, s * 0.08f), w)
+    drawLine(tint, Offset(s * 0.66f, s * 0.08f), Offset(s * 0.66f, s * 0.26f), w)
+    drawRect(tint, Offset(s * 0.3f, s * 0.3f), Size(s * 0.62f, s * 0.62f))
+    val c = Offset(s * 0.61f, s * 0.61f)
+    drawLine(Lc.menu, Offset(c.x - s * 0.17f, c.y), Offset(c.x + s * 0.17f, c.y), w * 1.2f)
+    drawLine(Lc.menu, Offset(c.x, c.y - s * 0.17f), Offset(c.x, c.y + s * 0.17f), w * 1.2f)
+}
+
+/** The trash can (Delete). */
+fun DrawScope.drawTrashIcon(tint: Color) {
+    val s = size.minDimension
+    val w = 1.6.dp.toPx()
+    drawLine(tint, Offset(s * 0.1f, s * 0.2f), Offset(s * 0.9f, s * 0.2f), w * 1.3f)
+    drawLine(tint, Offset(s * 0.38f, s * 0.08f), Offset(s * 0.62f, s * 0.08f), w)
+    val can = Path().apply {
+        moveTo(s * 0.18f, s * 0.24f)
+        lineTo(s * 0.26f, s * 0.94f)
+        lineTo(s * 0.74f, s * 0.94f)
+        lineTo(s * 0.82f, s * 0.24f)
+    }
+    drawPath(can, tint, style = Stroke(w))
+    for (x in listOf(0.38f, 0.5f, 0.62f)) drawLine(tint, Offset(s * x, s * 0.36f), Offset(s * x, s * 0.82f), w)
+}
+
+private val dialogRule = Color(0xFF393939)
+private val fieldFill = Color(0xFF0E0E0E)
+private val fieldLabel = Color(0xFFCDCDCD)
+private val cancelEdge = Color(0xFFB0B0B0)
+
+/**
+ * The reference's Rename for a mask or a part: 320 dp of its grey, "Rename" in bold over a rule,
+ * "Mask Name" over the field (the name chosen, the keyboard up, an ✕ that clears it), then Cancel
+ * (outlined) and OK (blue) as pills; OK with a blank name does nothing.
+ */
+@Composable
+fun RenameMaskDialog(initial: String, onDismiss: () -> Unit, onDone: (String) -> Unit) {
+    var field by remember { mutableStateOf(TextFieldValue(initial, TextRange(0, initial.length))) }
+    val focus = remember { FocusRequester() }
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .width(320.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(Lc.dialog)
+                .padding(start = 24.5.dp, end = 24.dp, top = 24.dp, bottom = 21.8.dp),
+        ) {
+            Text("Rename", color = Color.White, fontFamily = Inter, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Spacer(Modifier.height(10.dp))
+            Box(Modifier.fillMaxWidth().height(1.dp).background(dialogRule))
+            Spacer(Modifier.height(20.dp))
+            Text("Mask Name", color = fieldLabel, fontFamily = Inter, fontSize = 15.sp)
+            Spacer(Modifier.height(5.9.dp))
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(42.3.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(fieldFill)
+                    .border(2.dp, Lc.primaryBlue, RoundedCornerShape(4.dp))
+                    .padding(start = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BasicTextField(
+                    field,
+                    onValueChange = { field = it },
+                    singleLine = true,
+                    textStyle = TextStyle(color = Color.White, fontFamily = Inter, fontSize = 16.sp),
+                    cursorBrush = SolidColor(Lc.primaryBlue),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { if (field.text.isNotBlank()) onDone(field.text) }),
+                    modifier = Modifier.weight(1f).focusRequester(focus),
+                )
+                BarButton(MdIcon.Close, "Clear", size = 36.dp, iconSize = 20.dp, tint = Lc.panelText) { field = TextFieldValue("") }
+            }
+            Spacer(Modifier.height(32.1.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Box(
+                    Modifier
+                        .size(width = 91.dp, height = 39.9.dp)
+                        .clip(RoundedCornerShape(50))
+                        .border(1.5.dp, cancelEdge, RoundedCornerShape(50))
+                        .clickable(role = Role.Button, onClick = onDismiss),
+                    contentAlignment = Alignment.Center,
+                ) { Text("Cancel", color = cancelEdge, fontFamily = Inter, fontWeight = FontWeight.Bold, fontSize = 16.sp) }
+                Spacer(Modifier.width(15.6.dp))
+                Box(
+                    Modifier
+                        .size(width = 90.dp, height = 39.9.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(Lc.primary)
+                        .clickable(role = Role.Button) { if (field.text.isNotBlank()) onDone(field.text) },
+                    contentAlignment = Alignment.Center,
+                ) { Text("OK", color = Color.White, fontFamily = Inter, fontWeight = FontWeight.Bold, fontSize = 16.sp) }
+            }
+        }
+    }
+    LaunchedEffect(Unit) { focus.requestFocus() }
 }

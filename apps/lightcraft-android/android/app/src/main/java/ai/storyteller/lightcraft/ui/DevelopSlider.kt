@@ -151,7 +151,7 @@ private val fillFromStart = setOf(
     "grain.amount", "grain.size", "grain.roughness", "vignette.highlights",
     "detail.sharpenAmount", "detail.sharpenRadius", "detail.sharpenDetail", "detail.sharpenMasking",
     "detail.nrLuminance", "detail.nrDetail", "detail.nrContrast", "detail.nrColor", "detail.nrColorDetail", "detail.nrColorSmoothness",
-    "enhance.denoise", "brush.size", "brush.feather", "brush.opacity",
+    "enhance.denoise", "brush.size", "brush.feather", "brush.opacity", "mask.pickRefine",
 )
 
 /** The reference's slider geometry, in dp: the thumb's ring and the gap the track leaves around it. */

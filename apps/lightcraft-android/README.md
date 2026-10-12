@@ -113,9 +113,17 @@ rebuilds only what changed. Gradle finds `cargo` in `~/.cargo/bin` (or `$CARGO`)
   Remove's and Masking's handles are on the photo (`ui/CropTool.kt`, `ui/RemoveTool.kt`,
   `ui/MaskTool.kt`; `MobileSession.crop_frame` and `view_geometry` map the screen to the photo).
   Save and share open the export sheet (`ui/ExportSheet.kt`: file type, size, quality, metadata).
-  Masking lists the photo's masks above the tools and swaps the sections for the mask's own
-  adjustments; the mask shows in red over the photo while you edit it. Sideways, the panel, the
-  sections and the tools stand as columns to the right of the photo.
+  Masking lists the photo's masks in a column at the right, the edited one with its parts (each
+  with a menu: hide, rename, duplicate, convert to subtract or add, delete), and swaps the sections
+  for the mask's own adjustments; the edited part's tools stand at the left (a range's Pick and
+  Refine, a radial's Feather, a brush's size, feather and flow; invert, delete). A colour or
+  luminance range is picked with a ring or over an area dragged on the photo (`ui/RangePicker.kt`);
+  a luminance range's values are ranks in the photo's own brightness (50: half the photo is
+  darker), so a pick reads the same however the photo is exposed, and a colour range selects by
+  hue and chroma first, lightness counting far less (both measured against the reference's
+  masks on our test photos).
+  The mask shows in red over the photo while you edit it. Sideways, the panel, the sections and the
+  tools stand as columns to the right of the photo.
 - **Anything else** is a command away: `MobileSession.execute(id, json)` runs any of the engine's
   commands with the parameters documented in `docs/control-protocol.md` and the MCP tools.
 

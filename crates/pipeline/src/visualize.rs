@@ -51,6 +51,10 @@ pub enum MaskView {
     ImageOnWhite,
     /// The mask itself: white on black.
     WhiteOnBlack,
+    /// The reference's colour overlay (the Android app's): the overlay colour pushed in hard (its
+    /// channel full by half selection) and the others pressed down ([`tint`]). Not in [`Self::ALL`]
+    /// (the desktop's views).
+    Tint,
 }
 
 impl MaskView {
@@ -66,6 +70,7 @@ impl MaskView {
             MaskView::ImageOnBlack => "imageOnBlack",
             MaskView::ImageOnWhite => "imageOnWhite",
             MaskView::WhiteOnBlack => "whiteOnBlack",
+            MaskView::Tint => "tint",
         }
     }
 
@@ -77,11 +82,12 @@ impl MaskView {
             MaskView::ImageOnBlack => "Image on Black",
             MaskView::ImageOnWhite => "Image on White",
             MaskView::WhiteOnBlack => "White on Black",
+            MaskView::Tint => "Color Overlay",
         }
     }
 
     pub fn parse(s: &str) -> Option<MaskView> {
-        MaskView::ALL.into_iter().find(|v| v.name() == s)
+        MaskView::ALL.into_iter().chain([MaskView::Tint]).find(|v| v.name() == s)
     }
 
     /// The next view (Shift+O cycles them).
@@ -91,6 +97,9 @@ impl MaskView {
     }
 
     fn index(self) -> u64 {
+        if self == MaskView::Tint {
+            return MaskView::ALL.len() as u64;
+        }
         MaskView::ALL.iter().position(|v| *v == self).unwrap_or(0) as u64
     }
 }
@@ -105,7 +114,7 @@ fn unpack_mask(v: u64) -> Overlay {
     let rgb = (v >> 20) & 0xff_ffff;
     Overlay::Mask {
         id: (v & 0xffff) as u16,
-        view: MaskView::ALL.get(((v >> 16) & 0xf) as usize).copied().unwrap_or_default(),
+        view: MaskView::ALL.into_iter().chain([MaskView::Tint]).nth(((v >> 16) & 0xf) as usize).unwrap_or_default(),
         color: [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8],
         opacity: ((v >> 44) & 0x7f).min(100) as u8,
     }
@@ -199,11 +208,40 @@ pub fn mask_view(img: &mut Rgba8, a: &Plane, view: MaskView, color: [u8; 3], opa
                 MaskView::ImageOnBlack => p.map(|v| v * a),
                 MaskView::ImageOnWhite => p.map(|v| v * a + 255.0 * (1.0 - a)),
                 MaskView::WhiteOnBlack => [255.0 * a; 3],
+                // the reference's strength at its default opacity, 50
+                MaskView::Tint => tint(p, (a * op * 2.0).min(1.0), col),
             };
             let o = out.map(|v| v.round().clamp(0.0, 255.0) as u8);
             *px = [o[0], o[1], o[2], 255];
         }
     });
+}
+
+/// [`MaskView::Tint`] of encoded pixel `p` (0..255) selected `a` (0..1) in colour `col`, as the
+/// reference draws its red overlay at opacity 50 (fitted to it over our test photos, 2026-10-12,
+/// within ~10 levels): the overlay's own channels go to it fast (full by half selection); of the
+/// others the more luminous one drops to nothing quickly (light greys keep some), the other to
+/// about 0.72 of itself.
+fn tint(p: [f32; 3], a: f32, col: [f32; 3]) -> [f32; 3] {
+    const WEIGHT: [f32; 3] = [0.2126, 0.7152, 0.0722];
+    let ss = |x: f32| {
+        let t = x.clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    let on: [bool; 3] = std::array::from_fn(|c| col[c] >= 128.0);
+    // the off channel that weighs most in luminance is pressed down hardest
+    let strong = (0..3).filter(|c| !on[*c]).max_by(|x, y| WEIGHT[*x].total_cmp(&WEIGHT[*y]));
+    std::array::from_fn(|c| {
+        let v = p[c] / 255.0;
+        let (target, w) = if on[c] {
+            (col[c] / 255.0, ss(2.5 * a))
+        } else if Some(c) == strong {
+            ((1.167 * (v - 0.379)).clamp(0.0, 1.0), a.powf(0.355))
+        } else {
+            ((0.722 * v - 0.018).clamp(0.0, 1.0), a)
+        };
+        (v + (target - v) * w) * 255.0
+    })
 }
 
 /// Blur radius (Gaussian sigma) of the spot view, as a fraction of the long edge.
@@ -308,6 +346,34 @@ mod tests {
         assert!(e[1].abs_diff(px[1]) > 10, "{e:?} vs {px:?}");
     }
 
+    /// The tint draws as the reference's red overlay does at opacity 50 (its colours measured over
+    /// our test photos): fully selected deep blue and mid grey go a hard pink-red, unselected stay.
+    #[test]
+    fn tint_matches_the_reference_red_overlay() {
+        let red = [255.0, 0.0, 0.0];
+        let near = |a: [f32; 3], b: [f32; 3], tol: f32| a.iter().zip(b).all(|(x, y)| (x - y).abs() <= tol);
+        let ocean = tint([40.0, 48.0, 67.0], 1.0, red);
+        assert!(near(ocean, [255.0, 0.0, 46.0], 12.0), "{ocean:?}");
+        // (the fit's worst: a mid grey keeps a little green, 0 in the reference)
+        let grey = tint([120.0; 3], 1.0, red);
+        assert!(near(grey, [255.0, 0.0, 84.0], 12.0) || (grey[1] < 30.0 && (grey[2] - 84.0).abs() < 12.0), "{grey:?}");
+        let light = tint([184.0; 3], 1.0, red);
+        assert!(near(light, [255.0, 96.0, 131.0], 15.0), "light greys keep some green: {light:?}");
+        assert_eq!(tint([90.0, 100.0, 110.0], 0.0, red), [90.0, 100.0, 110.0]);
+        // half selected: red already full, green halfway down at most
+        let half = tint([120.0; 3], 0.5, red);
+        assert!(half[0] > 250.0 && half[1] < 60.0, "{half:?}");
+        // a green overlay pushes green in and presses red (the more luminous of the others) hardest
+        let g = tint([120.0; 3], 1.0, [0.0, 255.0, 0.0]);
+        assert!(g[1] > 250.0 && g[0] < g[2], "{g:?}");
+        // it travels like the other views
+        let o = Overlay::Mask { id: 3, view: MaskView::Tint, color: [255, 0, 0], opacity: 50 };
+        let (k, v) = o.to_parts();
+        assert_eq!(Overlay::from_parts(k, v), o);
+        assert_eq!(MaskView::parse("tint"), Some(MaskView::Tint));
+        assert!(!MaskView::ALL.contains(&MaskView::Tint));
+    }
+
     #[test]
     fn mask_overlay_shows_the_evaluated_alpha() {
         use lightcraft_develop::{Mask, MaskComponent, MaskOp, MaskShape};
@@ -316,7 +382,11 @@ mod tests {
         let info = SourceInfo::default();
         let shape = MaskShape::Radial { center: Point::new(0.25, 0.5), rx: 0.15, ry: 0.15, angle: 0.0, feather: 10.0, invert: false };
         let mut s = DevelopSettings::default();
-        s.masks.push(Mask { id: 7, components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }], ..Default::default() });
+        s.masks.push(Mask {
+            id: 7,
+            components: vec![MaskComponent { hidden: false, name: None, op: MaskOp::Add, invert: false, shape }],
+            ..Default::default()
+        });
         let plain = render(&src, &info, &s, &RenderRequest::fit(80, 40)).image;
         let shot = |s: &DevelopSettings, view: MaskView| {
             let o = Overlay::Mask { id: 7, view, color: [255, 0, 0], opacity: 100 };

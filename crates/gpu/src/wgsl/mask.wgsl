@@ -8,10 +8,27 @@ fn pos(x: u32, y: u32) -> vec2<f32> {
     return vec2<f32>(pf(4u) * px + pf(6u) * py + pf(8u), pf(5u) * px + pf(7u) * py + pf(9u));
 }
 
+// `masks::rank_of`: the rank of log luminance `l` in the `n`-entry table in aux.
+fn rank_of(l: f32, n: u32) -> f32 {
+    if (n < 2u || l <= aux[0]) {
+        return 0.0;
+    }
+    for (var i = 1u; i < n; i++) {
+        let a = aux[i - 1u];
+        let b = aux[i];
+        if (b >= l) {
+            return (f32(i - 1u) + (l - a) / max(b - a, 1e-12)) / f32(n - 1u);
+        }
+    }
+    return 1.0;
+}
+
 // P: w, h, kind, invert, affine[6], then per kind:
 //   0 linear: a.xy, d.xy, |d|²         1 radial: centre.xy, cos, sin, rx, ry, feather, invert
-//   2 luminance range: lo, hi, lo feather, hi feather, ev
-//   3 colour range: tol, gain, sample count (OkLab triples in aux)
+//   2 luminance range: lo, hi, lo feather, hi feather, ev, rank table entries (0: not ranked;
+//     the table in aux)
+//   3 colour range: tol, gain, box count, full (selected up to), toned (OkLab boxes in aux: low
+//     corner, high corner, weight on L)
 //   4 brush: stroke count (stroke records + dabs in aux)
 // `masks::chromaticity` of pixel i.
 fn chroma_at(i: u32) -> vec3<f32> {
@@ -60,22 +77,33 @@ fn shape(@builtin(global_invocation_id) g: vec3<u32>) {
     } else if (kind == 2u) {
         let lo = pf(10u);
         let hi = pf(11u);
-        let y = clamp((log_l[i] + pf(14u) + 8.0) / 12.0, 0.0, 1.0);
+        var y = clamp((log_l[i] + pf(14u) + 8.0) / 12.0, 0.0, 1.0);
+        if (pu(15u) != 0u) {
+            y = rank_of(log_l[i], pu(15u));
+        }
         v = sstep(lo - pf(12u), lo, y) * (1.0 - sstep(hi, hi + pf(13u), y));
     } else if (kind == 3u) {
         let tol = pf(10u);
         let gain = pf(11u);
         let c = vec3<f32>(img[3u * i], img[3u * i + 1u], img[3u * i + 2u]) * gain;
-        let lab = oklab(c / (1.0 + c));
+        var lab = oklab(c);
+        if (pu(14u) != 0u) {
+            lab = oklab(c / (1.0 + c));
+        }
         var best = 3.402823e38;
         for (var k = 0u; k < pu(12u); k++) {
-            let s = vec3<f32>(aux[3u * k], aux[3u * k + 1u], aux[3u * k + 2u]);
-            let da = lab.y - s.y;
-            let db = lab.z - s.z;
-            let dl = lab.x - s.x;
-            best = min(best, sqrt(da * da + db * db + 0.25 * (dl * dl)));
+            let lo = vec3<f32>(aux[7u * k], aux[7u * k + 1u], aux[7u * k + 2u]);
+            let hi = vec3<f32>(aux[7u * k + 3u], aux[7u * k + 4u], aux[7u * k + 5u]);
+            // `masks::color_box_distance`: none inside the box
+            let off = max(max(lo - lab, lab - hi), vec3<f32>(0.0));
+            let l = aux[7u * k + 6u] * off.x;
+            best = min(best, sqrt(off.y * off.y + off.z * off.z + l * l));
         }
-        v = 1.0 - sstep(tol * 0.5, tol, best);
+        v = 1.0 - sstep(pf(13u), tol, best);
+        // `masks::hue_first_dark`: near black a hue-first range selects nothing
+        if (pu(14u) == 0u) {
+            v *= sstep(0.1, 0.2, lab.x);
+        }
     } else if (kind == 4u) {
         // stroke record: dab offset, dab count, r, hard, flow, density, erase, bbox x0 y0 x1 y1, auto
         let px = f32(g.x) + 0.5;

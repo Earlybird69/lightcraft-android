@@ -170,7 +170,7 @@ class EditorState(val photoId: ULong, info: PhotoInfo, val device: DeviceOrigin?
     var masks by mutableStateOf<List<MaskInfo>>(emptyList())
     var selectedMask by mutableStateOf<UInt?>(null)
 
-    /** The part of the edited mask its handles and settings edit (an index of its parts). */
+    /** The part of the edited mask its handles and tools edit (an index of its parts; −1: the mask itself). */
     var maskPart by mutableIntStateOf(0)
     var maskSection by mutableStateOf<String?>(null)
     var maskErase by mutableStateOf(false)
@@ -186,6 +186,30 @@ class EditorState(val photoId: ULong, info: PhotoInfo, val device: DeviceOrigin?
 
     /** Masking's sheet over the editor: `new` (create a mask) or `list` (the photo's masks), if open. */
     var maskPicker by mutableStateOf<String?>(null)
+
+    /** The colour or luminance range picker, while it's open (its sheet takes the rows' place). */
+    var rangePicker by mutableStateOf<RangePicker?>(null)
+
+    /** The pill under the top bar while a value's slider beside the mask part's bar is open ("Refine: +50"). */
+    var barPill by mutableStateOf<String?>(null)
+
+    /** The masks' pictures in Masking's column: what each selects, white on black (by mask id). */
+    var maskThumbs by mutableStateOf<Map<UInt, ImageBitmap>>(emptyMap())
+
+    /** A luminance range's four lightnesses while the picker's slider moves them (before the engine has them back). */
+    var liveStops by mutableStateOf<List<Double>?>(null)
+
+    /** Where the history was as Masking opened: its Cancel takes back every step after it. */
+    internal var maskingMark: ULong? = null
+
+    /** Masking's Cancel is asking whether to discard its changes. */
+    var discardMasking by mutableStateOf(false)
+
+    /** There are steps since Masking opened (its Cancel would take them back). */
+    var maskingEdited by mutableStateOf(false)
+
+    /** Masking is a mode (its Cancel and Apply where the tools were): it has masks, or changes to discard. */
+    val maskingMode: Boolean get() = tool == MainTool.MASKING && (masks.isNotEmpty() || maskingEdited)
 
     /** Values while a finger moves them (before the engine has them back): local sliders, a shape's numbers, a dragged shape. */
     var liveLocal by mutableStateOf<Map<String, Double>>(emptyMap())
@@ -1794,12 +1818,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         s.info?.let { info = it }
     }
 
-    /** Back: out of Profiles (as Cancel), out of a sub-panel, off the white balance selector, then out of the editor. */
+    /** Back: out of Profiles, a range picker or Masking (as Cancel), out of a sub-panel, off the white balance selector, then out of the editor. */
     fun back() {
         val ed = editor ?: return
         when {
             ed.immersive -> ed.immersive = false
             ed.tool == MainTool.CROP -> cancelCrop()
+            ed.rangePicker != null -> cancelRangePicker()
+            ed.maskingMode -> cancelMasking()
             ed.section == EditSection.PROFILES && ed.tool == MainTool.EDIT -> cancelProfiles()
             ed.targeting != null -> ed.targeting = null
             ed.sub != null -> ed.sub = null
@@ -1859,7 +1885,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val w = (vp.width * scale).roundToInt().coerceAtLeast(1)
         val h = (vp.height * scale).roundToInt().coerceAtLeast(1)
         val mask = ed.selectedMask.takeIf { ed.tool == MainTool.MASKING && ed.showMaskOverlay }
-            ?.let { MaskOverlay(it, maskOverlayMode, maskOverlayColor.toUInt(), maskOverlayOpacity.toUByte()) }
+            // Color Overlay draws as the reference's does (the engine's `tint`)
+            ?.let { MaskOverlay(it, if (maskOverlayMode == "color") "tint" else maskOverlayMode, maskOverlayColor.toUInt(), maskOverlayOpacity.toUByte()) }
         // Crop's Aspect shows the whole photo under its frame; its Geometry, the photo as it comes out
         // Guided Upright draws its guides on the photo as the crop tool shows it
         val cropView = ed.tool == MainTool.CROP && (ed.cropTab != "geometry" || ed.state?.upright == "guided")
@@ -1974,8 +2001,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (tool == MainTool.MASKING) {
             ed.tool = if (ed.tool == tool) null else tool
             ed.maskPicker = null
+            ed.rangePicker = null
             if (ed.tool == tool) {
                 ed.maskSection = null
+                ed.maskingMark = null
+                ed.maskingEdited = false
+                engine?.let { e -> viewModelScope.launch { runCatching { e.command { historyDepth() } }.onSuccess { ed.maskingMark = it } } }
                 refreshMasks()
             }
             requestView()
@@ -2025,14 +2056,41 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val ed = editor ?: return
         val e = engine ?: return
         viewModelScope.launch {
-            runCatching { e.command { Triple(masks(ed.photoId), selectedMask(), viewGeometry(ed.photoId)) } }.onSuccess { (ms, sel, g) ->
+            runCatching { e.command { Triple(masks(ed.photoId), selectedMask(), viewGeometry(ed.photoId)) to historyDepth() } }.onSuccess { (t, depth) ->
+                val (ms, sel, g) = t
+                ed.maskingEdited = ed.maskingMark.let { it != null && it != depth }
                 ed.masks = ms
                 ed.selectedMask = sel?.takeIf { s -> ms.any { it.id == s } } ?: ms.firstOrNull()?.id
                 ed.geometry = g
                 if (ms.isEmpty() && ed.maskSection != null) ed.maskSection = null
                 val parts = ms.firstOrNull { it.id == ed.selectedMask }?.components?.size ?: 0
-                ed.maskPart = if (lastPart) (parts - 1).coerceAtLeast(0) else ed.maskPart.coerceIn(0, (parts - 1).coerceAtLeast(0))
+                ed.maskPart = when {
+                    lastPart -> (parts - 1).coerceAtLeast(0)
+                    // the mask itself stays edited
+                    ed.maskPart < 0 -> -1
+                    else -> ed.maskPart.coerceIn(0, (parts - 1).coerceAtLeast(0))
+                }
+                refreshMaskThumbs(ed)
             }
+        }
+    }
+
+    private var maskThumbRound = 0
+    private val MASK_THUMB_EDGE = 104
+
+    /** Render the masks' pictures again (the latest call's only), as the reference's column shows them. */
+    private fun refreshMaskThumbs(ed: EditorState) {
+        val e = engine ?: return
+        val round = ++maskThumbRound
+        val ids = ed.masks.map { it.id }
+        viewModelScope.launch {
+            val thumbs = withContext(e.thumbnails) {
+                ids.mapNotNull { id ->
+                    if (round != maskThumbRound) return@withContext null
+                    runCatching { e.session.renderMaskThumbnail(ed.photoId, id, MASK_THUMB_EDGE.toUInt()).toImageBitmap() }.getOrNull()?.let { id to it }
+                }
+            } ?: return@launch
+            if (round == maskThumbRound && editor === ed) ed.maskThumbs = thumbs.toMap()
         }
     }
 
@@ -2042,23 +2100,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         ed.maskPicker = if (ed.masks.isEmpty()) "new" else "list"
     }
 
-    /** A section of Masking's row: the edited mask's sliders of it (again: back to the mask's own); no mask yet, create one. */
+    /** A section of Masking's row: the edited mask's sliders of it (again: closed); no mask yet, create one. */
     fun selectMaskSection(section: String) {
         val ed = editor ?: return
         if (ed.selectedMask == null) {
             ed.maskPicker = "new"
             return
         }
-        ed.maskSection = if (ed.maskSection == section) "mask" else section
+        ed.maskSection = if (ed.maskSection == section) null else section
     }
 
-    /** Edit mask [id]: its own settings in the panel. */
+    /** Edit mask [id] itself (its picture in the column; its parts are picked under it). */
     fun selectMask(id: UInt) {
         val ed = editor ?: return
         val e = engine ?: return
         ed.selectedMask = id
-        ed.maskPart = 0
-        ed.maskSection = "mask"
+        ed.maskPart = -1
         viewModelScope.launch {
             runCatching { e.command { execute("mask.select", JSONObject().put("id", id.toLong()).toString()) } }
             if (ed.showMaskOverlay) requestView()
@@ -2080,14 +2137,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return params
     }
 
-    /** A new mask of [kind] (brush, linear, radial, colorRange, luminanceRange), placed in the middle of the view. */
+    /** A new mask of [kind] (brush, linear, radial, placed in the middle of the view; a colour or luminance range, picked next). */
     fun addMask(kind: String) {
         val ed = editor ?: return
+        if (kind == "colorRange" || kind == "luminanceRange") return startRangeMask(kind, null)
         val params = shapeParams(ed, kind)
         ed.maskPicker = null
         ed.maskPart = 0
         edit(after = {
-            ed.maskSection = "mask"
             refreshMasks()
             showNewMask(ed)
         }) { it.execute("mask.add", params.toString()) }
@@ -2097,13 +2154,287 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun addMaskPart(op: String, kind: String) {
         val ed = editor ?: return
         val mask = ed.selectedMask ?: return
+        if (kind == "colorRange" || kind == "luminanceRange") return startRangeMask(kind, op)
         val params = shapeParams(ed, kind).put("id", mask.toLong()).put("op", op)
         ed.maskPicker = null
         edit(after = {
-            ed.maskSection = "mask"
             refreshMasks(lastPart = true)
             showNewMask(ed)
         }) { it.execute("mask.addComponent", params.toString()) }
+    }
+
+    /**
+     * A new colour or luminance range mask ([op] null) or part (`add`, `subtract`), then its picker,
+     * as the reference's: the part and what's picked for it are one step, the picker's Cancel takes
+     * them back.
+     */
+    private fun startRangeMask(kind: String, op: String?) {
+        val ed = editor ?: return
+        val e = engine ?: return
+        val params = JSONObject().put("kind", kind)
+        // a luminance range starts as the whole scale (0 / 0 to 100 / 100), ranked: by rank in the
+        // photo's own luminance (both as the reference's)
+        if (kind == "luminanceRange") params.put("lo", 0.0).put("hi", 1.0).put("loFeather", 0.0).put("hiFeather", 0.0).put("ranked", true)
+        // a colour range selects by hue first (lightness counting little), as the reference's
+        if (kind == "colorRange") params.put("hueFirst", true)
+        if (op != null) params.put("id", (ed.selectedMask ?: return).toLong()).put("op", op)
+        ed.maskPicker = null
+        viewModelScope.launch {
+            runCatching {
+                e.command {
+                    val mark = historyDepth()
+                    beginAdjustment(kindLabel(kind))
+                    execute(if (op == null) "mask.add" else "mask.addComponent", params.toString())
+                    Triple(mark, masks(ed.photoId), selectedMask() to viewGeometry(ed.photoId))
+                }
+            }.onSuccess { (mark, ms, sg) ->
+                ed.masks = ms
+                ed.geometry = sg.second
+                val m = ms.firstOrNull { it.id == sg.first } ?: return@onSuccess
+                val part = m.components.size - 1
+                ed.selectedMask = m.id
+                ed.maskPart = part
+                // in the mode last used, as the reference's
+                ed.rangePicker = RangePicker(kind, m.id, part, creating = true, mode = pickerMode, ring = null, area = null).also { it.mark = mark }
+                requestView()
+            }.onFailure { say(it.message) }
+        }
+    }
+
+    /** The edited part's Pick: its picker again, at the point or over the area it last picked; Cancel puts it back as it was. */
+    fun repickPart() {
+        val ed = editor ?: return
+        val e = engine ?: return
+        val mask = ed.masks.firstOrNull { it.id == ed.selectedMask } ?: return
+        val i = ed.maskPart
+        val part = mask.components.getOrNull(i)?.takeIf { it.kind == "colorRange" || it.kind == "luminanceRange" } ?: return
+        val picked = runCatching { JSONObject(part.shape).optJSONArray("picked") }.getOrNull()
+        val pts = (0 until (picked?.length() ?: 0)).mapNotNull { k -> picked?.optJSONObject(k)?.let { it.optDouble("x") to it.optDouble("y") } }
+        val area = pts.takeIf { it.size == 2 }?.let { listOf(it[0].first, it[0].second, it[1].first, it[1].second) }
+        // an area's ring (should the mode change) is in its middle
+        val ring = area?.let { ((it[0] + it[2]) / 2) to ((it[1] + it[3]) / 2) } ?: pts.firstOrNull()
+        val picker = RangePicker(part.kind, mask.id, i, creating = false, mode = if (area != null) "area" else "point", ring = ring, area = area)
+        ed.rangePicker = picker
+        ed.maskSection = null
+        viewModelScope.launch {
+            runCatching {
+                e.command {
+                    val mark = historyDepth()
+                    beginAdjustment(kindLabel(part.kind))
+                    mark
+                }
+            }.onSuccess { picker.mark = it }
+        }
+        showNewMask(ed)
+    }
+
+    /** The range picker's Mode last chosen (`point` or `area`): a new picker opens in it, as the reference's. */
+    private var pickerMode = prefs.getString("pickerMode", "point") ?: "point"
+
+    /** The picker's Mode: the ring (`point`) or an area (`area`); kept for the next picker. */
+    fun setPickerMode(mode: String) {
+        val p = editor?.rangePicker ?: return
+        p.mode = mode
+        pickerMode = mode
+        prefs.edit().putString("pickerMode", mode).apply()
+    }
+
+    private var pickBusy = false
+    private var pickPending: JSONObject? = null
+
+    /** The ring moved to [x], [y] of the photo: it samples there (the latest place only while one is under way). */
+    fun pickAt(x: Double, y: Double) {
+        val p = editor?.rangePicker ?: return
+        p.ring = x to y
+        samplePicked(JSONObject().put("x", x).put("y", y))
+    }
+
+    /** An area dragged on the photo, corners [x0], [y0] and [x1], [y1]: it samples its colours (or lightnesses). */
+    fun pickArea(x0: Double, y0: Double, x1: Double, y1: Double) {
+        val p = editor?.rangePicker ?: return
+        p.area = listOf(x0, y0, x1, y1)
+        p.ring = ((x0 + x1) / 2) to ((y0 + y1) / 2)
+        samplePicked(JSONObject().put("x0", x0).put("y0", y0).put("x1", x1).put("y1", y1))
+    }
+
+    private fun samplePicked(at: JSONObject) {
+        val ed = editor ?: return
+        val e = engine ?: return
+        val p = ed.rangePicker ?: return
+        if (pickBusy) {
+            pickPending = at
+            return
+        }
+        pickBusy = true
+        val params = JSONObject(at.toString()).put("id", p.mask.toLong()).put("component", p.part)
+        val command = if (p.color) "mask.sampleColor" else "mask.sampleLuminance"
+        viewModelScope.launch {
+            val r = runCatching { e.command { execute(command, params.toString()); masks(ed.photoId) } }
+            pickBusy = false
+            r.onSuccess { ms ->
+                if (ed.rangePicker !== p) return@onSuccess
+                ed.masks = ms
+                ed.liveStops = null
+                p.sampled = true
+                // the mask shows as it's picked, as the reference's
+                if (!ed.showMaskOverlay) ed.showMaskOverlay = true
+                requestView(draft = true)
+            }
+            pickPending?.let {
+                pickPending = null
+                samplePicked(it)
+            }
+        }
+    }
+
+    /** The ring let go: the photo at its full size. */
+    fun pickDone() = requestView()
+
+    /** The picker's Refine (`refine`) moving. */
+    fun pickerShapeValue(key: String, value: Double) {
+        val ed = editor ?: return
+        val p = ed.rangePicker ?: return
+        val mask = ed.masks.firstOrNull { it.id == p.mask } ?: return
+        ed.liveShape = ed.liveShape + (key to value)
+        val shape = partShape(mask, p.part).put(key, value)
+        sendPickerShape(p, shape)
+    }
+
+    /** The picker's luminance range moving: its four lightnesses. */
+    fun pickerStops(stops: List<Double>) {
+        val ed = editor ?: return
+        val p = ed.rangePicker ?: return
+        val mask = ed.masks.firstOrNull { it.id == p.mask } ?: return
+        ed.liveStops = stops
+        sendPickerShape(p, luminanceShape(partShape(mask, p.part), stops))
+    }
+
+    private fun sendPickerShape(p: RangePicker, shape: JSONObject) {
+        val ed = editor ?: return
+        val e = engine ?: return
+        val params = JSONObject().put("id", p.mask.toLong()).put("component", p.part).put("shape", shape).toString()
+        viewModelScope.launch {
+            runCatching { e.command { execute("mask.update", params); masks(ed.photoId) } }.onSuccess { ms ->
+                if (ed.rangePicker === p) ed.masks = ms
+                requestView(draft = true)
+            }
+        }
+    }
+
+    /** A picker's slider let go: the photo at its full size, the values the engine's. */
+    fun pickerSliderDone() {
+        val ed = editor ?: return
+        ed.liveShape = emptyMap()
+        ed.liveStops = null
+        requestView()
+    }
+
+    /** The picker's Apply: what was picked is one step; the part stays edited (the masks' pictures follow). */
+    fun applyRangePicker() {
+        val ed = editor ?: return
+        val e = engine ?: return
+        val p = ed.rangePicker?.takeIf { it.sampled } ?: return
+        ed.rangePicker = null
+        ed.liveShape = emptyMap()
+        ed.liveStops = null
+        ed.maskPart = p.part
+        viewModelScope.launch {
+            runCatching { e.command { endAdjustment(); snapshot(ed.photoId) } }.onSuccess { ed.update(it) }
+            refreshMasks()
+            requestView()
+        }
+    }
+
+    /** The picker's Cancel: a part it made goes (its mask too, if it was the first), one picked again is put back. */
+    fun cancelRangePicker() {
+        val ed = editor ?: return
+        val p = ed.rangePicker ?: return
+        ed.rangePicker = null
+        ed.liveShape = emptyMap()
+        ed.liveStops = null
+        val mark = p.mark
+        if (p.creating) ed.maskPart = (p.part - 1).coerceAtLeast(0)
+        edit(after = { refreshMasks() }) { if (mark != null) it.discardTo(mark) else it.endAdjustment() }
+    }
+
+    /** Edit part [i] of the edited mask (its handles on the photo, its tools on the bar). */
+    fun selectMaskPart(i: Int) {
+        val ed = editor ?: return
+        ed.maskPart = i
+    }
+
+    /** A part's `invert`, `hide` (again: show) or `delete` (the last one takes its mask with it): one step. */
+    fun partCommand(i: Int, action: String) {
+        val ed = editor ?: return
+        val mask = ed.selectedMask ?: return
+        if (action == "delete") ed.maskPart = (i - 1).coerceAtLeast(0)
+        val params = JSONObject().put("id", mask.toLong()).put("component", i).put("action", action)
+        edit(after = { refreshMasks() }) { it.execute("mask.component", params.toString()) }
+    }
+
+    /** Part [i]'s copy, named [name], just above it (the newer) and edited next. */
+    fun duplicatePart(i: Int, name: String) {
+        val ed = editor ?: return
+        val mask = ed.selectedMask ?: return
+        val params = JSONObject().put("id", mask.toLong()).put("component", i).put("action", "duplicate").put("name", name)
+        ed.maskPart = i + 1
+        edit(after = { refreshMasks() }) { it.execute("mask.component", params.toString()) }
+    }
+
+    /** Part [i] adding to its mask or subtracting from it ([op] `add`, `subtract`). */
+    fun partOp(i: Int, op: String) {
+        val ed = editor ?: return
+        val mask = ed.selectedMask ?: return
+        val params = JSONObject().put("id", mask.toLong()).put("component", i).put("action", "op").put("op", op)
+        edit(after = { refreshMasks() }) { it.execute("mask.component", params.toString()) }
+    }
+
+    /** Part [i]'s new name (a blank one is ignored). */
+    fun renamePart(i: Int, name: String) {
+        val ed = editor ?: return
+        val mask = ed.selectedMask ?: return
+        if (name.isBlank()) return
+        val params = JSONObject().put("id", mask.toLong()).put("component", i).put("action", "rename").put("name", name.trim())
+        edit(after = { refreshMasks() }) { it.execute("mask.component", params.toString()) }
+    }
+
+    /** Masking's Cancel (its mode's X): with changes since it opened, asks first, as the reference's; else it just closes. */
+    fun cancelMasking() {
+        val ed = editor ?: return
+        val e = engine ?: return
+        val mark = ed.maskingMark ?: return closeMasking(ed)
+        viewModelScope.launch {
+            runCatching { e.command { historyDepth() } }.onSuccess { depth ->
+                ed.discardMasking = depth != mark
+                if (depth == mark) closeMasking(ed)
+            }
+        }
+    }
+
+    /** The discard question's Discard changes: every step since Masking opened, taken back for good, and Masking closed. */
+    fun discardMaskingChanges() {
+        val ed = editor ?: return
+        ed.discardMasking = false
+        val mark = ed.maskingMark
+        closeMasking(ed)
+        if (mark != null) edit(after = ::refreshToolState) { s -> s.discardTo(mark) }
+    }
+
+    /** Masking's Apply (its mode's ✓): its changes kept, Masking closed. */
+    fun applyMasking() {
+        val ed = editor ?: return
+        closeMasking(ed)
+    }
+
+    private fun closeMasking(ed: EditorState) {
+        if (ed.tool != MainTool.MASKING) return
+        ed.maskingEdited = false
+        ed.rangePicker = null
+        ed.maskPicker = null
+        ed.maskSection = null
+        ed.maskingMark = null
+        ed.tool = null
+        requestView()
     }
 
     /** A command on the edited mask (`mask.invert`, `mask.duplicate`, `mask.delete`). */
@@ -2173,17 +2504,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun localDone() = endMaskChange { editor?.liveLocal = emptyMap() }
 
-    /** The mask menu's Reset Current Adjustments: every adjustment of the edited mask back to none (one step). */
-    fun resetMaskAdjustments() {
-        val ed = editor ?: return
-        val mask = ed.masks.firstOrNull { it.id == ed.selectedMask } ?: return
-        val adjust = runCatching { JSONObject(mask.adjust) }.getOrNull() ?: return
-        val none = JSONObject()
-        adjust.keys().forEach { k -> if (adjust.opt(k) is Number) none.put(k, 0.0) }
-        if (none.length() == 0) return
-        edit(after = { refreshMasks() }) { it.execute("mask.adjust", JSONObject().put("id", mask.id.toLong()).put("values", none).toString()) }
-    }
-
     /** The edited mask's shape with [key] (`feather`, `refine`, `lo`, `hi`) at [value]. */
     fun setShapeValue(key: String, value: Double) {
         val ed = editor ?: return
@@ -2231,15 +2551,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             .put("flow", ed.maskBrushFlow.toDouble())
             .put("erase", ed.maskErase)
         edit(after = { refreshMasks() }) { it.execute("mask.brushStroke", params.toString()) }
-    }
-
-    /** A colour range's sample at [x], [y] of the photo (added to the ones it has). */
-    fun sampleColor(x: Double, y: Double) {
-        val ed = editor ?: return
-        val mask = ed.masks.firstOrNull { it.id == ed.selectedMask } ?: return
-        val any = (partShape(mask, ed.maskPart).optJSONArray("samples")?.length() ?: 0) > 0
-        val params = JSONObject().put("id", mask.id.toLong()).put("component", ed.maskPart).put("x", x).put("y", y).put("add", any)
-        edit(after = { refreshMasks() }) { it.execute("mask.sampleColor", params.toString()) }
     }
 
     /**

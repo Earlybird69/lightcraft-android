@@ -15,6 +15,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateIntAsState
 import androidx.compose.animation.core.exponentialDecay
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -124,6 +125,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -231,6 +233,7 @@ fun EditorScreen(vm: AppViewModel, ed: EditorState, snackbar: SnackbarHostState)
         }) { ed.maskOptions = false }
     }
     OverlayHost(ed.presetHeld) { p -> PresetManageSheet(vm, p) { ed.presetHeld = null } }
+    if (ed.discardMasking) DiscardMaskingDialog(vm) { ed.discardMasking = false }
     OverlayHost(ed.copyPicker.takeIf { it }) {
         SettingsPickerPage("Copy Settings", vm.copyGroups, modified = { vm.modifiedGroups() }, onDismiss = { ed.copyPicker = false }) { groups ->
             ed.copyPicker = false
@@ -299,7 +302,9 @@ private fun UprightEditor(vm: AppViewModel, ed: EditorState, createPreset: () ->
             val before = ed.showingBefore
             Column(Modifier.fillMaxWidth().alpha(if (before) 0f else 1f)) {
                 Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
-                EditorTopBar(vm, ed, createPreset, onExport, Modifier.windowInsetsPadding(horizontalInsets))
+                if (ed.rangePicker == null) EditorTopBar(vm, ed, createPreset, onExport, Modifier.windowInsetsPadding(horizontalInsets))
+                // a mask part's value slider: its name and value 7.8 dp under the bar (the reference's)
+                ed.barPill?.let { Pill(it, Modifier.align(Alignment.CenterHorizontally).padding(top = 7.8.dp)) }
             }
             if (before) BeforePill(Modifier.align(Alignment.TopCenter))
             Column(
@@ -359,7 +364,7 @@ private fun SidewaysEditor(vm: AppViewModel, ed: EditorState, createPreset: () -
             val before = ed.showingBefore
             Column(Modifier.width(with(density) { photoEnd.toDp() }).alpha(if (before) 0f else 1f)) {
                 Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
-                EditorTopBar(vm, ed, createPreset, onExport, Modifier.windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.displayCutout).only(WindowInsetsSides.Start)))
+                if (ed.rangePicker == null) EditorTopBar(vm, ed, createPreset, onExport, Modifier.windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.displayCutout).only(WindowInsetsSides.Start)))
             }
             if (before) Box(Modifier.width(with(density) { photoEnd.toDp() })) { BeforePill(Modifier.align(Alignment.TopCenter)) }
             Box(
@@ -376,8 +381,8 @@ private fun SidewaysEditor(vm: AppViewModel, ed: EditorState, createPreset: () -
     }
 }
 
-/** Sideways, the columns beside the panel (dp): the tools', and Edit's sections, Masking's or Actions'. */
-private fun sideColumnsWidth(ed: EditorState) = 53.5f + when (ed.tool) {
+/** Sideways, the columns beside the panel (dp): the tools' (Masking's Cancel and Apply once it's a mode), and Edit's sections, Masking's or Actions'. */
+private fun sideColumnsWidth(ed: EditorState) = (if (ed.maskingMode) MODE_STRIP else 53.5f) + when (ed.tool) {
     MainTool.EDIT, MainTool.MASKING -> 55.5f
     MainTool.ACTIONS -> 59.4f
     else -> 0f
@@ -442,6 +447,15 @@ private fun panelColor(opaque: Boolean = false): Color {
  */
 @Composable
 private fun BottomArea(vm: AppViewModel, ed: EditorState, onRows: (Int) -> Unit) {
+    val picker = ed.rangePicker
+    if (picker != null && ed.tool == MainTool.MASKING) {
+        // the photo moves up above the sheet, as the reference's
+        Column(Modifier.fillMaxWidth().onSizeChanged { onRows(it.height) }) {
+            RangePickerSheet(vm, ed, picker)
+            NavStrip(Color(0xFF1C1C1C))
+        }
+        return
+    }
     val cap = sheetCap(ed)
     val sheet = Modifier.fillMaxWidth().heightIn(max = cap).background(panelColor())
     val section = ed.section
@@ -480,7 +494,12 @@ private fun BottomArea(vm: AppViewModel, ed: EditorState, onRows: (Int) -> Unit)
                             MainTool.MASKING -> MaskSectionRow(vm, ed)
                             else -> {}
                         }
-                        ToolRow(vm, ed)
+                        // with a mask (or changes to discard), Masking is a mode: its Cancel and Apply where the tools were (the reference's)
+                        if (ed.maskingMode) {
+                            ModeBar("Masking", onCancel = vm::cancelMasking, onApply = vm::applyMasking)
+                        } else {
+                            ToolRow(vm, ed)
+                        }
                     }
                 }
             }
@@ -498,6 +517,11 @@ private fun SideArea(vm: AppViewModel, ed: EditorState) {
     val aside = ed.tool == MainTool.EDIT && ed.sub != null
     Row(Modifier.fillMaxHeight()) {
         val panel = Modifier.width(sidewaysPanelWidth(ed)).fillMaxHeight().background(panelColor(opaque = true))
+        val picker = ed.rangePicker
+        if (picker != null && ed.tool == MainTool.MASKING) {
+            RangePickerSheet(vm, ed, picker, Modifier.width(sidewaysPanelWidth(ed)), sideways = true)
+            return@Row
+        }
         when {
             ed.tool == MainTool.CROP -> Row(panel) {
                 CropSheet(vm, ed, Modifier.weight(1f).fillMaxHeight())
@@ -514,6 +538,8 @@ private fun SideArea(vm: AppViewModel, ed: EditorState) {
             ed.tool == MainTool.PRESETS -> PresetsSheet(vm, ed, panel)
         }
         if (mode || aside) return@Row
+        // with a mask (or changes to discard), Masking is a mode: its Cancel and Apply strip in the tools' place
+        val masking = ed.maskingMode
         Row(Modifier.fillMaxHeight().background(if (ed.tool != null) Lc.toolRows else Color.Transparent)) {
         if (ed.tool == MainTool.MASKING) {
             Column(Modifier.padding(start = 2.dp).width(53.5.dp).fillMaxHeight()) {
@@ -556,6 +582,10 @@ private fun SideArea(vm: AppViewModel, ed: EditorState) {
                     }
                 }
             }
+        }
+        if (masking) {
+            ModeStrip(onCancel = vm::cancelMasking, onApply = vm::applyMasking)
+            return@Row
         }
         val labels = ed.tool == null
         // no tool open: the tools are a card of their own at the top of the side; one open, a column with a hairline along it
@@ -644,6 +674,19 @@ private fun TopBarButtons(vm: AppViewModel, ed: EditorState, onCreatePreset: () 
                 BarButton(MdIcon.Help, "Help", size = 40.dp, tint = Lc.barIcon) { help() }
                 return@Row
             }
+            if (ed.maskingMode) {
+                Spacer(Modifier.weight(1f))
+                if (ed.history.undo != null || ed.history.redo != null || ed.info.edited) {
+                    UndoButton(vm, ed)
+                    Spacer(Modifier.width(7.7.dp))
+                }
+                BarButton(MdIcon.HelpOutline, "Help", size = 40.dp, tint = Lc.barIcon) { help() }
+                Spacer(Modifier.width(7.7.dp))
+                BarButton(LcIcon.MaskOverlay, if (ed.showMaskOverlay) "Hide mask" else "Show mask", size = 40.dp, tint = if (ed.showMaskOverlay) Lc.barIconOn else Lc.barIcon, onClick = vm::toggleMaskOverlay)
+                Spacer(Modifier.width(3.9.dp))
+                BarButton(MdIcon.MoreVert, "More options", size = 40.dp, tint = Lc.barIcon) { ed.maskOptions = true }
+                return@Row
+            }
             BarButton(MdIcon.ArrowBack, "Back", size = 40.dp, tint = Lc.barIcon, onClick = vm::closeEditor)
             Spacer(Modifier.weight(1f))
             // there once there's a step to take back, or edits to reset (a photo edited on an earlier visit)
@@ -660,7 +703,7 @@ private fun TopBarButtons(vm: AppViewModel, ed: EditorState, onCreatePreset: () 
                 Spacer(Modifier.width(7.7.dp))
                 // Masking: show the mask over the photo (between share and save, as in the reference)
                 if (ed.tool == MainTool.MASKING) {
-                    BarButton(if (ed.showMaskOverlay) LcIcon.MaskOverlay else LcIcon.MaskOverlayOff, if (ed.showMaskOverlay) "Hide mask" else "Show mask", size = 40.dp, tint = Lc.barIcon, onClick = vm::toggleMaskOverlay)
+                    BarButton(LcIcon.MaskOverlay, if (ed.showMaskOverlay) "Hide mask" else "Show mask", size = 40.dp, tint = if (ed.showMaskOverlay) Lc.barIconOn else Lc.barIcon, onClick = vm::toggleMaskOverlay)
                     Spacer(Modifier.width(7.7.dp))
                 }
                 BarButton(LcIcon.Download, "Save copy to device", size = 40.dp, tint = Lc.barIcon) { onExport(false) }
@@ -752,6 +795,11 @@ private fun UndoButton(vm: AppViewModel, ed: EditorState) {
     Box {
         Box(Modifier.size(40.dp).background(if (open) Lc.barButtonOpen else Color.Transparent)) {
             BarButton(LcIcon.Undo, "Undo and redo", size = 40.dp, tint = Lc.barIcon) { open = true }
+            // the reference's mark that it opens a menu: a small triangle in its lower right corner
+            Canvas(Modifier.matchParentSize()) {
+                val (c, a, b) = Triple(center, 9.5.dp.toPx(), 14.9.dp.toPx())
+                drawPath(Path().apply { moveTo(c.x + b, c.y + a); lineTo(c.x + b, c.y + b); lineTo(c.x + a, c.y + b); close() }, Lc.barIcon)
+            }
         }
         if (open) {
             Popup(
@@ -1092,6 +1140,49 @@ private fun ModeBar(title: String, onCancel: () -> Unit, onApply: () -> Unit) {
 }
 
 /**
+ * Masking's Cancel with changes made, as the reference's: "Discard Masking" in bold over a rule, what
+ * it does, then Keep editing (grey) over Discard changes (red), outlined pills at the right; discard
+ * goes back to how the photo was as Masking opened.
+ */
+@Composable
+private fun DiscardMaskingDialog(vm: AppViewModel, onDismiss: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .width(320.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(Lc.dialog)
+                .padding(start = 24.5.dp, end = 24.dp, top = 24.dp, bottom = 21.8.dp),
+        ) {
+            Text("Discard Masking", color = Color.White, fontFamily = Inter, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Spacer(Modifier.height(10.dp))
+            Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF393939)))
+            Spacer(Modifier.height(16.dp))
+            Text("The changes made to Masking will be discarded when you cancel.", color = Lc.panelText, fontFamily = Inter, fontSize = 15.sp, lineHeight = 18.7.sp)
+            Spacer(Modifier.height(41.4.dp))
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(15.6.dp)) {
+                DialogPill("Keep editing", Color(0xFFB0B0B0), onClick = onDismiss)
+                DialogPill("Discard changes", Color(0xFFEC5B62), onClick = vm::discardMaskingChanges)
+            }
+        }
+    }
+}
+
+/** An outlined pill button of the reference's dialogs: its words and edge in [color]. */
+@Composable
+private fun DialogPill(text: String, color: Color, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .height(39.9.dp)
+            .clip(RoundedCornerShape(50))
+            .border(1.5.dp, color, RoundedCornerShape(50))
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = 18.dp),
+        contentAlignment = Alignment.Center,
+    ) { Text(text, color = color, fontFamily = Inter, fontWeight = FontWeight.Bold, fontSize = 16.sp) }
+}
+
+/**
  * A mode's Cancel and Apply sideways, as the reference's: a 48.6 dp strip at the panel's right
  * where the tools stand otherwise, a hairline along it, the two stacked halfway down at its right
  * end; no title.
@@ -1336,7 +1427,10 @@ private fun PhotoView(vm: AppViewModel, ed: EditorState, modifier: Modifier, sid
         if (vm.viewOverlay == "info" && ed.tool == null) FileInfo(vm, ed, Modifier.align(Alignment.TopStart).padding(start = 10.dp, top = 62.5.dp))
         val geometry = ed.geometry
         val mask = ed.masks.firstOrNull { it.id == ed.selectedMask }
-        if (ed.tool == MainTool.MASKING && ed.maskSection != "new" && mask != null && geometry != null && image != null && !ed.showingCropView) {
+        val picker = ed.rangePicker
+        if (ed.tool == MainTool.MASKING && picker != null && geometry != null && image != null && !ed.showingCropView) {
+            RangePickerOverlay(vm, ed, picker, ed.masks.firstOrNull { it.id == picker.mask }, geometry, IntSize(image.width, image.height), Modifier.fillMaxSize())
+        } else if (ed.tool == MainTool.MASKING && ed.maskSection != "new" && mask != null && geometry != null && image != null && !ed.showingCropView) {
             MaskOverlay(vm, ed, mask, geometry, IntSize(image.width, image.height), Modifier.fillMaxSize())
         }
         if (ed.tool == MainTool.REMOVE && !ed.showingCropView && geometry != null && image != null) {
@@ -1353,7 +1447,11 @@ private fun PhotoView(vm: AppViewModel, ed: EditorState, modifier: Modifier, sid
         if (targeting && image != null) TargetedOverlay(vm, IntSize(image.width, image.height), Modifier.fillMaxSize())
         // as the reference's: 16 dp from the right, its foot 51.6 dp above the photo's
         // the reference's tab against the right edge, 36 dp over the rows
-        if (ed.tool == MainTool.MASKING) MaskColumn(vm, ed, Modifier.align(Alignment.BottomEnd).padding(end = coveredEnd, bottom = 36.dp))
+        if (ed.tool == MainTool.MASKING && picker == null) {
+            MaskColumn(vm, ed, Modifier.align(Alignment.BottomEnd).padding(end = coveredEnd, bottom = 36.dp))
+            // the edited part's tools against the left edge, their foot level with the column's (the reference's)
+            MaskPartBar(vm, ed, Modifier.align(Alignment.BottomStart).padding(bottom = 36.dp))
+        }
         ed.state?.previewOnly?.let { why ->
             Text(
                 "Shown from the camera's preview: $why",

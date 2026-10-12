@@ -208,6 +208,11 @@ pub struct MaskPart {
     pub kind: String,
     /// Its shape, as the engine's JSON (what `mask.update` takes for this part).
     pub shape: String,
+    /// The name it was given (none: it goes by its kind).
+    pub name: Option<String>,
+    /// Left out of the mask (its menu's Hide).
+    pub hidden: bool,
+    pub invert: bool,
 }
 
 /// A mask (local adjustment) of a photo, as the Masking tool lists and edits it.
@@ -1039,6 +1044,27 @@ impl MobileSession {
         Ok(rendered_image(id, r.rendered.map_err(MobileError::Render)?, draft))
     }
 
+    /// Mask `mask` of photo `id` as Masking's column pictures it: what it selects, white on black,
+    /// over the photo as cropped, fitting `size × size` (a plain render: the view's caches are left
+    /// alone). Blocks.
+    pub fn render_mask_thumbnail(&self, id: u64, mask: u32, size: u32) -> Result<RenderedImage, MobileError> {
+        let photo = PhotoId(id);
+        let mask = u16::try_from(mask).map_err(|_| MobileError::Command(format!("no mask {mask}")))?;
+        let n = size.clamp(1, 512) as usize;
+        let job = self.lock().render_job(photo, n, n, false, true).ok_or(MobileError::NoPhoto(id))?;
+        let job = job
+            .with_overlay(lightcraft_engine::pipeline::Overlay::Mask {
+                id: mask,
+                view: lightcraft_engine::pipeline::MaskView::WhiteOnBlack,
+                color: [255, 255, 255],
+                opacity: 100,
+            })
+            .draft();
+        let r = job.run();
+        self.lock().accept(&r);
+        Ok(rendered_image(id, r.rendered.map_err(MobileError::Render)?, true))
+    }
+
     /// Photo `id` with its edits but not its crop or straightening (turned and flipped as the photo
     /// is), for the crop tool to draw the crop over. Fits `max_width × max_height`. Blocks.
     pub fn render_crop_view(&self, id: u64, max_width: u32, max_height: u32, draft: bool) -> Result<RenderedImage, MobileError> {
@@ -1158,6 +1184,9 @@ impl MobileSession {
                                 op: enum_id(c.op),
                                 kind: shape.get("kind").and_then(Value::as_str).unwrap_or_default().to_string(),
                                 shape: shape.to_string(),
+                                name: c.name.clone(),
+                                hidden: c.hidden,
+                                invert: c.invert,
                             }
                         })
                         .collect(),

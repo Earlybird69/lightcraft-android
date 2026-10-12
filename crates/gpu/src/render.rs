@@ -936,7 +936,7 @@ fn masks(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Ho
     let comp_plane = cx.gpu.buffer(n);
     for (mi, m) in list.iter().enumerate() {
         let mut first = true;
-        for comp in &m.components {
+        for comp in m.components.iter().filter(|c| !c.hidden) {
             let op = match comp.op {
                 _ if first && comp.op != MaskOp::Intersect => 0u32,
                 MaskOp::Add => 1,
@@ -963,15 +963,21 @@ fn masks(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Ho
                     p.push(*invert as u32);
                     Some(1)
                 }
-                MaskShape::LuminanceRange { lo, hi, lo_feather, hi_feather } => {
+                MaskShape::LuminanceRange { lo, hi, lo_feather, hi_feather, ranked, ranks, .. } => {
                     p.extend(f32s(&[*lo, *hi, lo_feather.max(1e-3), hi_feather.max(1e-3)]));
                     p.push(ev.to_bits());
+                    let table = ranks.as_deref().filter(|r| *ranked && r.len() > 1);
+                    p.push(table.map_or(0, |r| r.len() as u32));
+                    aux.extend(table.into_iter().flatten());
                     Some(2)
                 }
-                MaskShape::ColorRange { samples, refine } => {
-                    let tol = lightcraft_pipeline::masks::color_range_tolerance(*refine);
-                    p.extend([tol.to_bits(), ev.exp2().to_bits(), samples.len() as u32]);
-                    aux.extend(samples.iter().flat_map(|s| s.map(|v| v as f32)));
+                MaskShape::ColorRange { samples, refine, area, hue_first, .. } => {
+                    let sel = lightcraft_pipeline::masks::color_select(samples, *refine, area.as_ref(), *hue_first);
+                    p.extend([sel.tol.to_bits(), ev.exp2().to_bits(), sel.boxes.len() as u32, sel.full.to_bits(), u32::from(sel.toned)]);
+                    for (b, w) in sel.boxes.iter().zip(&sel.l_weights) {
+                        aux.extend(b.iter().flatten());
+                        aux.push(*w);
+                    }
                     Some(3)
                 }
                 MaskShape::Brush { strokes } => {

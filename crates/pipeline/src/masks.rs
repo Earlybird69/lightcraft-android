@@ -115,13 +115,13 @@ pub fn evaluate(masks: &[Mask], frame: &Frame, w: usize, h: usize, img: &Rgb32f,
         .collect()
 }
 
-/// The alpha plane of mask `m` (whether visible or not): its components combined, inverted and
-/// scaled by its amount.
+/// The alpha plane of mask `m` (whether visible or not): its components (the hidden ones left
+/// out) combined, inverted and scaled by its amount.
 #[allow(clippy::too_many_arguments)]
 pub fn evaluate_one(m: &Mask, frame: &Frame, w: usize, h: usize, img: &Rgb32f, log_l: &Plane, ev: f32, mattes: Option<&Mattes>) -> Plane {
     let mut alpha = Plane::new(w, h);
     let mut first = true;
-    for comp in &m.components {
+    for comp in m.components.iter().filter(|c| !c.hidden) {
         let mut c = shape_alpha(&comp.shape, frame, w, h, img, log_l, ev, mattes);
         if comp.invert {
             c.data.iter_mut().for_each(|v| *v = 1.0 - *v);
@@ -208,24 +208,29 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
             });
         }
         MaskShape::Brush { strokes } => rasterize_brush(strokes, frame, w, h, img, log_l, &mut out),
-        MaskShape::LuminanceRange { lo, hi, lo_feather, hi_feather } => {
+        MaskShape::LuminanceRange { lo, hi, lo_feather, hi_feather, ranked, ranks, .. } => {
             let (lo, hi, lf, hf) = (*lo as f32, *hi as f32, (*lo_feather as f32).max(1e-3), (*hi_feather as f32).max(1e-3));
+            let ranks = ranks.as_deref().filter(|r| *ranked && r.len() > 1);
             for (v, l) in out.data.iter_mut().zip(&log_l.data) {
-                // map log luminance to a 0..1 perceptual scale (−8..+4 EV)
-                let y = ((l + ev + 8.0) / 12.0).clamp(0.0, 1.0);
+                // a ranked range: the pixel's rank in the photo (exposure moves every pixel alike);
+                // else log luminance on a 0..1 scale (−8..+4 EV)
+                let y = match ranks {
+                    Some(r) => rank_of(r, *l),
+                    None => ((l + ev + 8.0) / 12.0).clamp(0.0, 1.0),
+                };
                 *v = smooth(lo - lf, lo, y) * (1.0 - smooth(hi, hi + hf, y));
             }
         }
-        MaskShape::ColorRange { samples, refine } => {
-            let tol = color_range_tolerance(*refine);
-            let samples: Vec<[f32; 3]> = samples.iter().map(|s| [s[0] as f32, s[1] as f32, s[2] as f32]).collect();
+        MaskShape::ColorRange { samples, refine, area, hue_first, .. } => {
+            let sel = color_select(samples, *refine, area.as_ref(), *hue_first);
             for (v, c) in out.data.iter_mut().zip(&img.data) {
-                let lab = lightcraft_color::perceptual::oklab_from_2020(tonemap_for_select(c.map(|v| v * gain)));
-                let d = samples
-                    .iter()
-                    .map(|s| ((lab[1] - s[1]).powi(2) + (lab[2] - s[2]).powi(2) + 0.25 * (lab[0] - s[0]).powi(2)).sqrt())
-                    .fold(f32::MAX, f32::min);
-                *v = 1.0 - smooth(tol * 0.5, tol, d);
+                let c = c.map(|v| v * gain);
+                let lab = lightcraft_color::perceptual::oklab_from_2020(if sel.toned { tonemap_for_select(c) } else { c });
+                let d = sel.boxes.iter().zip(&sel.l_weights).map(|(b, w)| color_box_distance(lab, b, *w)).fold(f32::MAX, f32::min);
+                *v = 1.0 - smooth(sel.full, sel.tol, d);
+                if !sel.toned {
+                    *v *= hue_first_dark(lab[0]);
+                }
             }
         }
         MaskShape::Sky => {
@@ -425,6 +430,190 @@ pub(crate) fn tonemap_for_select(c: [f32; 3]) -> [f32; 3] {
 /// Refine 100 reaches 0.075 and Refine 0 is the sample's own shade (full to 0.0075, gone at 0.015).
 pub fn color_range_tolerance(refine: f64) -> f32 {
     0.015 + 0.06 * (refine / 100.0).clamp(0.0, 1.0) as f32
+}
+
+/// A colour range's samples as OkLab boxes (low and high corners): a sampled colour is a box of
+/// no size, an area the box its colours span (CPU here, `mask.wgsl` kind 3; both take these).
+pub fn color_range_boxes(samples: &[[f64; 3]], area: Option<&[[f64; 3]; 2]>) -> Vec<[[f32; 3]; 2]> {
+    let f = |s: &[f64; 3]| s.map(|v| v as f32);
+    samples.iter().map(|s| [f(s), f(s)]).chain(area.map(|[lo, hi]| [f(lo), f(hi)])).collect()
+}
+
+/// How a colour range selects (CPU here, `mask.wgsl` kind 3 alike): its boxes
+/// ([`color_range_boxes`]) with each one's weight on lightness, the distance
+/// ([`color_box_distance`]) up to which a pixel is fully selected and the one at which it has
+/// left the selection, and whether pixels are compared toned down ([`tonemap_for_select`]).
+pub struct ColorSelect {
+    pub boxes: Vec<[[f32; 3]; 2]>,
+    pub l_weights: Vec<f32>,
+    pub full: f32,
+    pub tol: f32,
+    pub toned: bool,
+}
+
+/// [`ColorSelect`] for a colour range. By default: toned down, L at half weight, fully selected to
+/// half of [`color_range_tolerance`]. `hue_first`, as the reference selects (fitted to its masks
+/// over our test photos, 2026-10-12): the scene colour as it is, fading out from the sample itself
+/// to 0.025 + 0.0008 × Refine, lightness weighed 1 / (5.92 + 92 × the sample's chroma) — a grey
+/// sample takes greys up to ~0.36 lighter or darker (at Refine 50), a blue one only blues, of
+/// nearly any lightness. Near black ([`hue_first_dark`]) its hue means nothing: the selection
+/// fades out (the reference leaves the black of space out of a blue pick).
+pub fn color_select(samples: &[[f64; 3]], refine: f64, area: Option<&[[f64; 3]; 2]>, hue_first: bool) -> ColorSelect {
+    let boxes = color_range_boxes(samples, area);
+    if !hue_first {
+        let tol = color_range_tolerance(refine);
+        return ColorSelect { l_weights: vec![0.5; boxes.len()], boxes, full: tol * 0.5, tol, toned: true };
+    }
+    let l_weights = boxes
+        .iter()
+        .map(|[lo, hi]| {
+            let (a, b) = ((lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5);
+            1.0 / (5.92 + 92.0 * a.hypot(b))
+        })
+        .collect();
+    let tol = 0.025 + 0.0008 * refine.clamp(0.0, 100.0) as f32;
+    ColorSelect { boxes, l_weights, full: 0.0, tol, toned: false }
+}
+
+/// How much of a hue-first selection a pixel of OkLab lightness `l` keeps: none below 0.1 (about
+/// sRGB 4/255), all from 0.2 (about 20/255) up (the reference selects greys from 32/255).
+#[inline]
+pub fn hue_first_dark(l: f32) -> f32 {
+    smooth(0.1, 0.2, l)
+}
+
+/// How far OkLab colour `lab` is from box `b` (none inside it): a and b at full weight, L at
+/// `l_weight` ([`ColorSelect`]).
+#[inline]
+pub fn color_box_distance(lab: [f32; 3], b: &[[f32; 3]; 2], l_weight: f32) -> f32 {
+    let off = |k: usize| (b[0][k] - lab[k]).max(lab[k] - b[1][k]).max(0.0);
+    (off(1).powi(2) + off(2).powi(2) + (l_weight * off(0)).powi(2)).sqrt()
+}
+
+/// Luminance range masks select on a 0..1 scale of log luminance (−8..+4 EV around middle grey,
+/// exposure applied). Their picker and slider show lightness 0..1 instead: CIE L* / 100 of the
+/// scene luminance, white at 1. Lightness 1 is the top of the scale (everything brighter included),
+/// 0 its foot.
+pub fn range_from_lightness(l: f64) -> f64 {
+    if l >= 1.0 {
+        return 1.0;
+    }
+    if l <= 0.0 {
+        return 0.0;
+    }
+    let lstar = l * 100.0;
+    let y = if lstar > 8.0 { ((lstar + 16.0) / 116.0).powi(3) } else { lstar / 903.3 };
+    (((y / f64::from(crate::tone::GREY)).log2() + 8.0) / 12.0).clamp(0.0, 1.0)
+}
+
+/// The lightness (0..1) a luminance range value stands for: the inverse of [`range_from_lightness`].
+pub fn lightness_from_range(v: f64) -> f64 {
+    if v >= 1.0 {
+        return 1.0;
+    }
+    if v <= 0.0 {
+        return 0.0;
+    }
+    let y = f64::from(crate::tone::GREY) * (12.0 * v - 8.0).exp2();
+    let lstar = if y > 0.008856 { 116.0 * y.cbrt() - 16.0 } else { 903.3 * y };
+    (lstar / 100.0).min(1.0)
+}
+
+/// A luminance range picked at lightness `l` (a point) or over lightness `l`..`u` (an area): fully
+/// selected from 0.1 below a point (an area's darkest) to 0.1 above it (its lightest), fading out
+/// over 0.25 more on each side; as `(lo, hi, lo_feather, hi_feather)` on the range scale.
+pub fn picked_luminance_range(l: f64, u: Option<f64>) -> (f64, f64, f64, f64) {
+    let (lower, upper) = match u {
+        Some(u) => (l.min(u), l.max(u)),
+        None => (l - 0.1, l + 0.1),
+    };
+    let r = |v: f64| range_from_lightness(v.clamp(0.0, 1.0));
+    let (lo, hi) = (r(lower), r(upper));
+    (lo, hi, lo - r(lower - 0.25), r(upper + 0.25) - hi)
+}
+
+/// Steps of a ranked luminance range's table ([`luminance_ranks`]): the photo's luminance at
+/// ranks 0, 1/64, … 1.
+pub const RANK_STEPS: usize = 64;
+
+/// Long edge (px) of the copy of the photo a ranked luminance range ranks against
+/// ([`rank_copy`]): ranks come from the whole photo however much of it a render shows, and from a
+/// small copy, so tiny specks don't count.
+pub const RANK_EDGE: usize = 256;
+
+/// A copy of `img` at most [`RANK_EDGE`] px long, each pixel the mean of up to 4 × 4 samples of
+/// its cell.
+pub fn rank_copy(img: &Rgb32f) -> Rgb32f {
+    let (w, h) = (img.width, img.height);
+    if w == 0 || h == 0 || img.data.len() < w * h {
+        return Rgb32f::new(0, 0);
+    }
+    let k = (RANK_EDGE as f64 / w.max(h) as f64).min(1.0);
+    let (sw, sh) = (((w as f64 * k).round() as usize).max(1), ((h as f64 * k).round() as usize).max(1));
+    let mut out = Rgb32f::new(sw, sh);
+    for (o, d) in out.data.iter_mut().enumerate() {
+        let (x, y) = (o % sw, o / sw);
+        let (x0, x1) = (x * w / sw, ((x + 1) * w / sw).max(x * w / sw + 1));
+        let (y0, y1) = (y * h / sh, ((y + 1) * h / sh).max(y * h / sh + 1));
+        let (xs, ys) = ((x1 - x0).min(4), (y1 - y0).min(4));
+        let mut c = [0.0f32; 3];
+        for j in 0..ys {
+            let py = y0 + (2 * j + 1) * (y1 - y0) / (2 * ys);
+            for i in 0..xs {
+                let px = x0 + (2 * i + 1) * (x1 - x0) / (2 * xs);
+                if let Some(p) = img.data.get(py * w + px) {
+                    c = [c[0] + p[0], c[1] + p[1], c[2] + p[2]];
+                }
+            }
+        }
+        let n = (xs * ys) as f32;
+        *d = c.map(|v| v / n);
+    }
+    out
+}
+
+/// The table a ranked luminance range selects with: the log luminance ([`crate::local::log_lum`])
+/// of `img` (a [`rank_copy`]) at ranks 0, 1/[`RANK_STEPS`], … 1.
+pub fn luminance_ranks(img: &Rgb32f) -> Vec<f32> {
+    let mut l: Vec<f32> = img.data.iter().map(|c| crate::local::log_lum(*c)).collect();
+    if l.is_empty() {
+        return vec![0.0; RANK_STEPS + 1];
+    }
+    l.sort_by(f32::total_cmp);
+    let last = l.len() - 1;
+    (0..=RANK_STEPS).map(|i| l[i * last / RANK_STEPS]).collect()
+}
+
+/// The rank (0..1: the share of the photo darker) of log luminance `l` in table `ranks`
+/// ([`luminance_ranks`]), linear between its steps (CPU here, `mask.wgsl` kind 2 alike).
+#[inline]
+pub fn rank_of(ranks: &[f32], l: f32) -> f32 {
+    let n = ranks.len();
+    match ranks.first() {
+        Some(&first) if n > 1 && l > first => {}
+        _ => return 0.0,
+    }
+    for i in 1..n {
+        let (a, b) = (ranks[i - 1], ranks[i]);
+        if b >= l {
+            return ((i - 1) as f32 + (l - a) / (b - a).max(1e-12)) / (n - 1) as f32;
+        }
+    }
+    1.0
+}
+
+/// A ranked luminance range picked at rank `r` (a point) or over ranks `r`..`u` (an area): fully
+/// selected 0.1 either side of a point (an area: from its darkest to its lightest), fading out
+/// over 0.25 more; a bound within 0.15 of an end goes to that end, unfeathered (so a dark pick
+/// takes in everything darker). As `(lo, hi, lo_feather, hi_feather)`.
+pub fn picked_ranked_range(r: f64, u: Option<f64>) -> (f64, f64, f64, f64) {
+    let (lower, upper) = match u {
+        Some(u) => (r.min(u), r.max(u)),
+        None => (r - 0.1, r + 0.1),
+    };
+    let lo = if lower <= 0.15 { 0.0 } else { lower.min(1.0) };
+    let hi = if upper >= 0.85 { 1.0 } else { upper.max(0.0) };
+    (lo, hi, lo.min(0.25), (1.0 - hi).min(0.25))
 }
 
 /// A brush stroke resolved to output pixels: dab centres (spacing r/4 along the path), radius,
@@ -691,7 +880,7 @@ mod tests {
         let shape = MaskShape::Radial { center: Point::new(0.5, 0.5), rx: 0.2, ry: 0.2, angle: 0.0, feather: 20.0, invert: false };
         let a = shape_alpha(&shape, &f, 100, 100, &img, &l, 0.0, None);
         assert!(a.get(50, 50) > 0.99 && a.get(5, 5) < 0.01);
-        let m = Mask { components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: true, shape }], ..Default::default() };
+        let m = Mask { components: vec![MaskComponent { hidden: false, name: None, op: MaskOp::Add, invert: true, shape }], ..Default::default() };
         let e = evaluate(&[m], &f, 100, 100, &img, &l, 0.0, None);
         assert!(e[0].alpha.get(50, 50) < 0.01);
     }
@@ -704,7 +893,13 @@ mod tests {
         let stroke = BrushStroke { points: vec![Point::new(0.1, 0.5), Point::new(0.9, 0.5)], size: 0.05, ..Default::default() };
         let erase = BrushStroke { points: vec![Point::new(0.5, 0.5)], size: 0.05, erase: true, feather: 0.0, ..Default::default() };
         let m = Mask {
-            components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes: vec![stroke, erase] } }],
+            components: vec![MaskComponent {
+                hidden: false,
+                name: None,
+                op: MaskOp::Add,
+                invert: false,
+                shape: MaskShape::Brush { strokes: vec![stroke, erase] },
+            }],
             ..Default::default()
         };
         let e = evaluate(&[m], &f, 200, 100, &img, &l, 0.0, None);
@@ -755,6 +950,7 @@ mod tests {
         let f = Frame::new(w, h, &Default::default(), true);
         let soft = Mask {
             components: vec![MaskComponent {
+                hidden: false,
                 name: None,
                 op: MaskOp::Add,
                 invert: false,
@@ -769,6 +965,38 @@ mod tests {
         };
         let (plain, sharp) = (step(&soft), step(&refined));
         assert!(sharp > plain * 1.5 && sharp > 0.1, "the edge in the mask follows the photo's: {plain} → {sharp}");
+    }
+
+    /// A hue-first colour range selects as the reference does (its masks measured over our test
+    /// photos): from a mid grey, a grey 21 L* lighter about half and one 30 L* darker a little; from
+    /// a deep blue, a lighter blue mostly and a pale one partly, a brown and near black not at all;
+    /// Refine widens it.
+    #[test]
+    fn hue_first_selects_by_hue_as_the_reference_does() {
+        use lightcraft_color::{REC2020, SRGB, transfer::decode_srgb8};
+        let m = SRGB.to_space(&REC2020);
+        let scene = |rgb: [u8; 3]| m.apply_f32(rgb.map(decode_srgb8));
+        let patches: [[u8; 3]; 7] = [[120, 120, 120], [174, 174, 174], [47, 47, 47], [99, 107, 135], [142, 147, 173], [197, 164, 164], [2, 3, 6]];
+        let (w, h) = (60 * patches.len(), 20);
+        let img = Rgb32f::from_fn(w, h, |x, _| scene(patches[x / 60]));
+        let log_l = img.map(crate::local::log_lum);
+        let f = Frame::new(w, h, &Default::default(), true);
+        let lab = |rgb: [u8; 3]| lightcraft_color::perceptual::oklab_from_2020(scene(rgb)).map(f64::from);
+        let picked = |sample: [u8; 3], refine: f64| {
+            let shape = MaskShape::ColorRange { samples: vec![lab(sample)], refine, area: None, picked: vec![], hue_first: true };
+            let a = shape_alpha(&shape, &f, w, h, &img, &log_l, 0.0, None);
+            (0..patches.len()).map(|k| a.get(k * 60 + 30, 10)).collect::<Vec<f32>>()
+        };
+        let grey = picked([120, 120, 120], 50.0);
+        assert!(grey[0] > 0.99 && (0.45..0.65).contains(&grey[1]) && (0.12..0.32).contains(&grey[2]), "{grey:?}");
+        let blue = picked([41, 47, 74], 50.0);
+        assert!((0.65..0.85).contains(&blue[3]) && (0.33..0.53).contains(&blue[4]) && blue[5] < 0.01, "{blue:?}");
+        assert!(blue[6] < 0.01, "near black isn't blue, however bluish its noise: {blue:?}");
+        let (tight, wide) = (picked([41, 47, 74], 6.0), picked([41, 47, 74], 100.0));
+        assert!(tight[4] < 0.01 && wide[4] > 0.65 && tight[3] < blue[3] && wide[3] > blue[3], "{tight:?} {wide:?}");
+        // the old way (toned down, L at half weight) is far tighter
+        let old = color_select(&[[0.5, 0.0, 0.0]], 50.0, None, false);
+        assert!(old.tol < 0.05 && old.toned && old.l_weights == [0.5]);
     }
 
     /// Issue #157: a colour-range sample of one flat patch must not select a clearly different
@@ -794,7 +1022,7 @@ mod tests {
             }
         }
         let alpha = |refine| {
-            let shape = MaskShape::ColorRange { samples: vec![sample], refine };
+            let shape = MaskShape::ColorRange { samples: vec![sample], refine, area: None, picked: vec![], hue_first: false };
             let a = shape_alpha(&shape, &f, w, h, &img, &log_l, 0.0, None);
             (a.get(30, 20), a.get(90, 20))
         };
@@ -807,6 +1035,104 @@ mod tests {
         // other patch stays mostly out
         let (l, r) = alpha(100.0);
         assert!(l > 0.95 && r < 0.3, "refine 100: {l} vs {r}");
+        // an area over both patches spans both colours, so it selects them both
+        let lab = |c: [f32; 3]| lightcraft_color::perceptual::oklab_from_2020(tonemap_for_select(c)).map(f64::from);
+        let (a, b) = (lab(left), lab(right));
+        let area = [[a[0].min(b[0]), a[1].min(b[1]), a[2].min(b[2])], [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2])]];
+        let shape = MaskShape::ColorRange { samples: vec![], refine: 50.0, area: Some(area), picked: vec![], hue_first: false };
+        let both = shape_alpha(&shape, &f, w, h, &img, &log_l, 0.0, None);
+        assert!(both.get(30, 20) > 0.95 && both.get(90, 20) > 0.95, "{} {}", both.get(30, 20), both.get(90, 20));
+    }
+
+    /// A hidden component is left out of its mask: hiding the one that subtracts gives the whole
+    /// radial back, hiding them all selects nothing.
+    #[test]
+    fn hidden_components_are_left_out() {
+        let (w, h) = (64usize, 64usize);
+        let img = Rgb32f::filled(w, h, [0.2, 0.2, 0.2]);
+        let log_l = img.map(crate::local::log_lum);
+        let f = Frame::new(w, h, &Default::default(), true);
+        let radial = MaskShape::Radial { center: Point::new(0.5, 0.5), rx: 0.4, ry: 0.4, angle: 0.0, feather: 0.0, invert: false };
+        let all = MaskShape::Linear { start: Point::new(0.5, 2.0), end: Point::new(0.5, 3.0) };
+        let comp = |op, shape, hidden| MaskComponent { hidden, name: None, op, invert: false, shape };
+        let mut m = Mask { components: vec![comp(MaskOp::Add, radial, false), comp(MaskOp::Subtract, all, false)], ..Default::default() };
+        let centre = |m: &Mask| evaluate_one(m, &f, w, h, &img, &log_l, 0.0, None).get(32, 32);
+        assert!(centre(&m) < 0.01, "subtracted: {}", centre(&m));
+        m.components[1].hidden = true;
+        assert!(centre(&m) > 0.99, "the subtraction hidden: {}", centre(&m));
+        m.components[0].hidden = true;
+        assert!(centre(&m) < 0.01, "all hidden: {}", centre(&m));
+    }
+
+    /// A ranked range picked at a rank: 0.1 either side, fading over 0.25 more, a bound within
+    /// 0.15 of an end taken to it (the reference's readings, in hundredths: lo − feather, lo, hi,
+    /// hi + feather).
+    #[test]
+    fn picked_ranked_ranges() {
+        let shown = |(lo, hi, lf, hf): (f64, f64, f64, f64)| [lo - lf, lo, hi, hi + hf].map(|v| (v * 100.0).round() as i32);
+        assert_eq!(shown(picked_ranked_range(0.01, None)), [0, 0, 11, 36]);
+        assert_eq!(shown(picked_ranked_range(0.16, None)), [0, 0, 26, 51]);
+        assert_eq!(shown(picked_ranked_range(0.32, None)), [0, 22, 42, 67]);
+        assert_eq!(shown(picked_ranked_range(0.61, None)), [26, 51, 71, 96]);
+        assert_eq!(shown(picked_ranked_range(0.74, None)), [39, 64, 84, 100]);
+        assert_eq!(shown(picked_ranked_range(0.75, None)), [40, 65, 100, 100]);
+        assert_eq!(shown(picked_ranked_range(0.89, None)), [54, 79, 100, 100]);
+        // an area: from its darkest to its lightest
+        assert_eq!(shown(picked_ranked_range(0.7, Some(0.3))), [5, 30, 70, 95]);
+    }
+
+    /// Ranks come from the whole photo: on a left-to-right ramp a pixel's rank is how far across
+    /// it is, and a ranked range selects that share of the photo whatever the exposure.
+    #[test]
+    fn ranked_luminance_selects_a_share_of_the_photo() {
+        let (w, h) = (400, 40);
+        let img = Rgb32f::from_fn(w, h, |x, _| [((x as f32 + 0.5) / w as f32 * 8.0 - 9.0).exp2(); 3]);
+        let ranks = luminance_ranks(&rank_copy(&img));
+        assert_eq!(ranks.len(), RANK_STEPS + 1);
+        assert!(ranks.windows(2).all(|p| p[0] <= p[1]));
+        let l = img.map(crate::local::log_lum);
+        for x in [40, 200, 330] {
+            let r = rank_of(&ranks, l.data[x]);
+            assert!((r - x as f32 / w as f32).abs() < 0.02, "{x}: {r}");
+        }
+        assert_eq!((rank_of(&ranks, -30.0), rank_of(&ranks, 30.0)), (0.0, 1.0));
+        let shape = |ev: f32| {
+            let s = MaskShape::LuminanceRange {
+                lo: 0.4,
+                hi: 0.6,
+                lo_feather: 0.001,
+                hi_feather: 0.001,
+                picked: vec![],
+                ranked: true,
+                ranks: Some(std::sync::Arc::new(ranks.clone())),
+            };
+            shape_alpha(&s, &frame(w, h), w, h, &img, &l, ev, None)
+        };
+        let a = shape(0.0);
+        let share = a.data.iter().sum::<f32>() / a.data.len() as f32;
+        assert!((share - 0.2).abs() < 0.02, "{share}");
+        assert!(a.data[h / 2 * w + w / 2] > 0.99 && a.data[h / 2 * w + w / 10] < 0.01);
+        assert_eq!(shape(2.0), a, "exposure moves every pixel alike");
+    }
+
+    /// The luminance picker's lightness and the range scale map back and forth; a point picks 0.1
+    /// either side of it and fades over 0.25 more; white is the top of the scale.
+    #[test]
+    fn picked_luminance_ranges() {
+        for l in [0.05, 0.3, 0.46, 0.66, 0.9, 0.99] {
+            let back = lightness_from_range(range_from_lightness(l));
+            assert!((back - l).abs() < 1e-9, "{l} → {back}");
+        }
+        // middle grey (L* 49.5) sits at 8/12 of the scale; white is its top, black its foot
+        assert!((range_from_lightness((116.0 * 0.18f64.cbrt() - 16.0) / 100.0) - 8.0 / 12.0).abs() < 1e-6, "middle grey");
+        assert_eq!((range_from_lightness(1.0), lightness_from_range(1.0)), (1.0, 1.0));
+        assert_eq!((range_from_lightness(0.0), lightness_from_range(0.0)), (0.0, 0.0));
+        let (lo, hi, lf, hf) = picked_luminance_range(0.66, None);
+        let l = |v: f64| (lightness_from_range(v) * 100.0).round();
+        assert_eq!((l(lo - lf), l(lo), l(hi), l(hi + hf)), (31.0, 56.0, 76.0, 100.0));
+        let (lo, hi, lf, hf) = picked_luminance_range(0.4, Some(1.0));
+        assert_eq!((l(lo - lf), l(lo), l(hi), l(hi + hf)), (15.0, 40.0, 100.0, 100.0));
+        assert_eq!(hi, 1.0, "white reaches the top of the scale");
     }
 
     /// A half-resolution matte selecting the left `frac` of a `w × h` source.
