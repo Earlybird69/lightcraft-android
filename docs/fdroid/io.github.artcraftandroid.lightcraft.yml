@@ -18,17 +18,16 @@ Builds:
     subdir: apps/lightcraft-android/android/app
     sudo:
       - apt-get update
-      - apt-get install -y build-essential
+      - apt-get install -y gcc libc-dev rustup
     gradle:
       - yes
+    output: build/outputs/apk/release/app-release-unsigned.apk
     binary: https://github.com/artcraft-android/lightcraft-android/releases/download/v%v/lightcraft-android-%v-armeabi-v7a.apk
-    srclibs:
-      - rustup@1.28.2
     prebuild:
-      - bash $$rustup$$/rustup-init.sh -y --default-toolchain none --profile minimal
-      - source $HOME/.cargo/env
-      - rustup toolchain install
-      - cargo install cargo-ndk --version 4.1.2 --locked
+      - rustup toolchain install $(sed -n -E 's/^channel = "(.*)"/\1/p' ../../../../rust-toolchain.toml)
+        --profile minimal --target armv7-linux-androideabi
+      - cargo install --locked --version $(sed -n -E 's/.*cargo install cargo-ndk
+        --version ([0-9.]+).*/\1/p' ../../../../.github/workflows/release.yml) cargo-ndk
     ndk: 29.0.14206865
     gradleprops:
       - lightcraft.abis=armeabi-v7a
@@ -40,17 +39,16 @@ Builds:
     subdir: apps/lightcraft-android/android/app
     sudo:
       - apt-get update
-      - apt-get install -y build-essential
+      - apt-get install -y gcc libc-dev rustup
     gradle:
       - yes
+    output: build/outputs/apk/release/app-release-unsigned.apk
     binary: https://github.com/artcraft-android/lightcraft-android/releases/download/v%v/lightcraft-android-%v.apk
-    srclibs:
-      - rustup@1.28.2
     prebuild:
-      - bash $$rustup$$/rustup-init.sh -y --default-toolchain none --profile minimal
-      - source $HOME/.cargo/env
-      - rustup toolchain install
-      - cargo install cargo-ndk --version 4.1.2 --locked
+      - rustup toolchain install $(sed -n -E 's/^channel = "(.*)"/\1/p' ../../../../rust-toolchain.toml)
+        --profile minimal --target aarch64-linux-android
+      - cargo install --locked --version $(sed -n -E 's/.*cargo install cargo-ndk
+        --version ([0-9.]+).*/\1/p' ../../../../.github/workflows/release.yml) cargo-ndk
     ndk: 29.0.14206865
     gradleprops:
       - lightcraft.abis=arm64-v8a

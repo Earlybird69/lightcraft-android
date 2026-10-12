@@ -53,10 +53,11 @@ jobs:
           echo "version=$v" >>"$GITHUB_OUTPUT"
           echo "### v$v (\`${GITHUB_SHA::9}\`)" >>"$GITHUB_STEP_SUMMARY"
 
+      # Java 21: what F-Droid's build server (Debian trixie) builds with, so both APKs match
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
       # the Rust release and targets rust-toolchain.toml names (the same compiler F-Droid builds with)
       - name: Install Rust
