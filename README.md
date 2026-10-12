@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/artcraft-android/lightcraft-android/releases"><img src="https://raw.githubusercontent.com/Kunzisoft/Github-badge/main/get-it-on-github.png" alt="Get it on GitHub" height="60"></a>
   <a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/artcraft-android/lightcraft-android"><img src="https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png" alt="Get it on Obtainium" height="60"></a>
-  <br><sub>Each release has two APKs: <code>arm64-v8a</code> for most phones, <code>armeabi-v7a</code> for 32-bit ARM ones.</sub>
+  <br><sub>Each release has two APKs: the plain one for most phones, the <code>-armeabi-v7a</code> one for 32-bit ARM phones.</sub>
 </p>
 
 <p align="center">

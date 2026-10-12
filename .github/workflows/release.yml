@@ -80,7 +80,8 @@ jobs:
           fi
 
       # one APK per ABI (each about half the size of one holding both): 64-bit ARM for most
-      # phones, 32-bit ARM (armeabi-v7a) for older and low-end ones
+      # phones (lightcraft-android-<version>.apk), 32-bit ARM for older and low-end ones
+      # (lightcraft-android-<version>-armeabi-v7a.apk)
       - name: Build
         working-directory: apps/lightcraft-android/android
         env:
@@ -92,7 +93,8 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/dist"
           for abi in arm64-v8a armeabi-v7a; do
             ./gradlew assembleRelease "-Plightcraft.abis=$abi" "-Plightcraft.version=$VERSION" --no-daemon
-            cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/dist/lightcraft-android-$VERSION-$abi.apk"
+            suffix=""; [ "$abi" = arm64-v8a ] || suffix="-$abi"
+            cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/dist/lightcraft-android-$VERSION$suffix.apk"
           done
 
       - name: APK
