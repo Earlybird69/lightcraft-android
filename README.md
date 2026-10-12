@@ -12,6 +12,7 @@
 <p align="center">
   <a href="https://github.com/artcraft-android/lightcraft-android/releases"><img src="https://raw.githubusercontent.com/Kunzisoft/Github-badge/main/get-it-on-github.png" alt="Get it on GitHub" height="60"></a>
   <a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/artcraft-android/lightcraft-android"><img src="https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png" alt="Get it on Obtainium" height="60"></a>
+  <br><sub>Each release has two APKs: <code>arm64-v8a</code> for most phones, <code>armeabi-v7a</code> for 32-bit ARM ones.</sub>
 </p>
 
 <p align="center">
@@ -159,6 +160,7 @@ Build time dependencies:
   ```
       Rust 1.90 or newer
       rustup target add aarch64-linux-android x86_64-linux-android
+      rustup target add armv7-linux-androideabi   (only for 32-bit ARM builds)
       cargo install cargo-ndk
       Android SDK (API 37) and NDK 29.0.14206865
       JDK 17 or newer

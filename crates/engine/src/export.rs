@@ -1387,7 +1387,7 @@ pub fn encode_with_metadata(img: &Rgba8, o: &ExportOptions, meta: Option<&Metada
             let jpeg = |q: u8| encode::encode_jpeg(&e, q, sub, &meta);
             match o.limit_kb {
                 Some(kb) => {
-                    let limit = kb as usize * 1024;
+                    let limit = (kb as usize).saturating_mul(1024);
                     // Binary search for the highest quality that fits.
                     let (mut lo, mut hi) = (1u8, o.quality);
                     let mut best = None;

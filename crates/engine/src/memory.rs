@@ -37,7 +37,8 @@ fn total_ram() -> Option<usize> {
     {
         let s = std::fs::read_to_string("/proc/meminfo").ok()?;
         let kb: usize = s.lines().find(|l| l.starts_with("MemTotal:"))?.split_whitespace().nth(1)?.parse().ok()?;
-        Some(kb * 1024)
+        // (saturating: a 32-bit build on a phone with 4 GiB or more)
+        Some(kb.saturating_mul(1024))
     }
     #[cfg(target_os = "macos")]
     {

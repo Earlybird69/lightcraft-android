@@ -1,10 +1,11 @@
-# Release pipeline: pushing a version tag (v0.0.1-beta, v0.2.0, v1.0.0-rc.1, …) builds the APK
-# signed with the release key and makes it a draft GitHub release named after the tag, with an empty
-# "What's Changed" section. Fill that in on GitHub and publish the draft: it becomes the latest
-# release (betas too: while the app is in beta, every release is one).
+# Release pipeline: pushing a version tag (v0.0.1-beta, v0.2.0, v1.0.0-rc.1, …) builds the APKs
+# (one for 64-bit ARM phones, one for 32-bit ARM ones) signed with the release key and makes them a
+# draft GitHub release named after the tag, with an empty "What's Changed" section. Fill that in on
+# GitHub and publish the draft: it becomes the latest release (betas too: while the app is in beta,
+# every release is one).
 #
-# A manual run (Actions › Release › Run workflow) is a dry run: it builds the APK at the version in
-# gradle.properties and keeps it as the run's artifact, and releases nothing.
+# A manual run (Actions › Release › Run workflow) is a dry run: it builds the APKs at the version in
+# gradle.properties and keeps them as the run's artifact, and releases nothing.
 name: Release
 
 on:
@@ -53,7 +54,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          targets: aarch64-linux-android, armv7-linux-androideabi
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -78,31 +79,37 @@ jobs:
             echo "::warning::No release key: this dry run is signed with the debug key"
           fi
 
+      # one APK per ABI (each about half the size of one holding both): 64-bit ARM for most
+      # phones, 32-bit ARM (armeabi-v7a) for older and low-end ones
       - name: Build
         working-directory: apps/lightcraft-android/android
         env:
+          VERSION: ${{ steps.v.outputs.version }}
           LIGHTCRAFT_KEYSTORE_PASSWORD: ${{ secrets.LIGHTCRAFT_KEYSTORE_PASSWORD }}
           LIGHTCRAFT_KEY_ALIAS: ${{ secrets.LIGHTCRAFT_KEY_ALIAS }}
           LIGHTCRAFT_KEY_PASSWORD: ${{ secrets.LIGHTCRAFT_KEY_PASSWORD }}
-        run: ./gradlew assembleRelease -Plightcraft.abis=arm64-v8a "-Plightcraft.version=${{ steps.v.outputs.version }}" --no-daemon
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          for abi in arm64-v8a armeabi-v7a; do
+            ./gradlew assembleRelease "-Plightcraft.abis=$abi" "-Plightcraft.version=$VERSION" --no-daemon
+            cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/dist/lightcraft-android-$VERSION-$abi.apk"
+          done
 
       - name: APK
-        env:
-          VERSION: ${{ steps.v.outputs.version }}
         run: |
-          mkdir -p dist
-          apk="dist/lightcraft-android-$VERSION.apk"
-          cp apps/lightcraft-android/android/app/build/outputs/apk/release/app-release.apk "$apk"
           apksigner="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n 1)apksigner"
-          certs="$("$apksigner" verify --print-certs "$apk")"
-          if [ "$GITHUB_REF_TYPE" = tag ] && grep -q "CN=Android Debug" <<<"$certs"; then
-            echo "::error::$apk is signed with the debug key"
-            exit 1
-          fi
-          {
-            echo
-            grep "certificate SHA-256" <<<"$certs" | sed 's/^/    /'
-          } >>"$GITHUB_STEP_SUMMARY"
+          echo >>"$GITHUB_STEP_SUMMARY"
+          for apk in dist/*.apk; do
+            certs="$("$apksigner" verify --print-certs "$apk")"
+            if [ "$GITHUB_REF_TYPE" = tag ] && grep -q "CN=Android Debug" <<<"$certs"; then
+              echo "::error::$apk is signed with the debug key"
+              exit 1
+            fi
+            {
+              echo "    $(basename "$apk")"
+              grep "certificate SHA-256" <<<"$certs" | sed 's/^/      /'
+            } >>"$GITHUB_STEP_SUMMARY"
+          done
 
       - uses: actions/upload-artifact@v7
         with:

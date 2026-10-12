@@ -31,6 +31,7 @@ Where the reference uses Google's Material icons, so does LightCraft (the same A
 
 You need:
 - Rust ≥ 1.90 with the Android targets: `rustup target add aarch64-linux-android x86_64-linux-android`
+  (and `armv7-linux-androideabi` to build for 32-bit ARM phones)
 - [cargo-ndk](https://github.com/bbqsrc/cargo-ndk): `cargo install cargo-ndk`
 - the Android SDK with NDK 29.0.14206865 (Android Studio → SDK Manager → SDK Tools → NDK)
 - JDK 17 or newer (Android Studio's bundled one is fine)
@@ -41,6 +42,7 @@ Then open `apps/lightcraft-android/android` in Android Studio and press Run, or 
 cd apps/lightcraft-android/android
 ./gradlew installDebug                                # phone (arm64) and emulator (x86_64) libraries
 ./gradlew installDebug -Plightcraft.abis=arm64-v8a    # just the phone's: half the Rust build time
+./gradlew installDebug -Plightcraft.abis=armeabi-v7a  # a 32-bit ARM phone
 ```
 
 In PowerShell, quote the property, or PowerShell splits it at the dot:
