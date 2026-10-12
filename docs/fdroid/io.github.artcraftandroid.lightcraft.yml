@@ -1,0 +1,68 @@
+Categories:
+  - Graphics
+License: MIT
+AuthorName: artcraft-android
+SourceCode: https://github.com/artcraft-android/lightcraft-android
+IssueTracker: https://github.com/artcraft-android/lightcraft-android/issues
+Changelog: https://github.com/artcraft-android/lightcraft-android/releases
+
+AutoName: LightCraft
+
+RepoType: git
+Repo: https://github.com/artcraft-android/lightcraft-android.git
+
+Builds:
+  - versionName: 0.0.3-beta
+    versionCode: 3011
+    commit: TAG_COMMIT_SHA
+    subdir: apps/lightcraft-android/android/app
+    sudo:
+      - apt-get update
+      - apt-get install -y build-essential
+    gradle:
+      - yes
+    binary: https://github.com/artcraft-android/lightcraft-android/releases/download/v%v/lightcraft-android-%v-armeabi-v7a.apk
+    srclibs:
+      - rustup@1.28.2
+    prebuild:
+      - bash $$rustup$$/rustup-init.sh -y --default-toolchain none --profile minimal
+      - source $HOME/.cargo/env
+      - rustup toolchain install
+      - cargo install cargo-ndk --version 4.1.2 --locked
+    ndk: 29.0.14206865
+    gradleprops:
+      - lightcraft.abis=armeabi-v7a
+      - lightcraft.unsigned=true
+
+  - versionName: 0.0.3-beta
+    versionCode: 3012
+    commit: TAG_COMMIT_SHA
+    subdir: apps/lightcraft-android/android/app
+    sudo:
+      - apt-get update
+      - apt-get install -y build-essential
+    gradle:
+      - yes
+    binary: https://github.com/artcraft-android/lightcraft-android/releases/download/v%v/lightcraft-android-%v.apk
+    srclibs:
+      - rustup@1.28.2
+    prebuild:
+      - bash $$rustup$$/rustup-init.sh -y --default-toolchain none --profile minimal
+      - source $HOME/.cargo/env
+      - rustup toolchain install
+      - cargo install cargo-ndk --version 4.1.2 --locked
+    ndk: 29.0.14206865
+    gradleprops:
+      - lightcraft.abis=arm64-v8a
+      - lightcraft.unsigned=true
+
+AllowedAPKSigningKeys: 7356d58ae3446b3e6cc457d0b9901700376c787310c9dba14e9c11866588eeb5
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags
+VercodeOperation:
+  - '%c * 10 + 1'
+  - '%c * 10 + 2'
+UpdateCheckData: apps/lightcraft-android/android/gradle.properties|lightcraft\.versionCode=(\d+)|apps/lightcraft-android/android/gradle.properties|lightcraft\.version=(.+)
+CurrentVersion: 0.0.3-beta
+CurrentVersionCode: 3012

@@ -44,6 +44,12 @@ jobs:
             echo "::error::'$v' is not a version like 1.2.3 or 1.2.3-beta"
             exit 1
           fi
+          # the tag must be the version gradle.properties names (F-Droid builds from that file)
+          listed="$(sed -n 's/^lightcraft\.version=//p' apps/lightcraft-android/android/gradle.properties)"
+          if [ "$v" != "$listed" ]; then
+            echo "::error::the tag is v$v but gradle.properties says lightcraft.version=$listed: set it (and lightcraft.versionCode) before tagging"
+            exit 1
+          fi
           echo "version=$v" >>"$GITHUB_OUTPUT"
           echo "### v$v (\`${GITHUB_SHA::9}\`)" >>"$GITHUB_STEP_SUMMARY"
 
@@ -52,9 +58,9 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android, armv7-linux-androideabi
+      # the Rust release and targets rust-toolchain.toml names (the same compiler F-Droid builds with)
+      - name: Install Rust
+        run: rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -62,7 +68,7 @@ jobs:
 
       - name: Install cargo-ndk and the Android NDK
         run: |
-          cargo install cargo-ndk --locked
+          cargo install cargo-ndk --version 4.1.2 --locked
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;29.0.14206865" >/dev/null
 
       - name: Release key

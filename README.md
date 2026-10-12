@@ -158,10 +158,8 @@ Build time dependencies:
   <summary>required tools</summary>
 
   ```
-      Rust 1.90 or newer
-      rustup target add aarch64-linux-android x86_64-linux-android
-      rustup target add armv7-linux-androideabi   (only for 32-bit ARM builds)
-      cargo install cargo-ndk
+      rustup (it installs the Rust release and Android targets rust-toolchain.toml names)
+      cargo install cargo-ndk --version 4.1.2 --locked
       Android SDK (API 37) and NDK 29.0.14206865
       JDK 17 or newer
   ```

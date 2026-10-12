@@ -30,9 +30,9 @@ Where the reference uses Google's Material icons, so does LightCraft (the same A
 ## Build and run
 
 You need:
-- Rust ≥ 1.90 with the Android targets: `rustup target add aarch64-linux-android x86_64-linux-android`
-  (and `armv7-linux-androideabi` to build for 32-bit ARM phones)
-- [cargo-ndk](https://github.com/bbqsrc/cargo-ndk): `cargo install cargo-ndk`
+- [rustup](https://rustup.rs): it installs the Rust release and the Android targets that
+  `rust-toolchain.toml` names (one pinned release, so every build of a commit is byte-identical)
+- [cargo-ndk](https://github.com/bbqsrc/cargo-ndk): `cargo install cargo-ndk --version 4.1.2 --locked`
 - the Android SDK with NDK 29.0.14206865 (Android Studio → SDK Manager → SDK Tools → NDK)
 - JDK 17 or newer (Android Studio's bundled one is fine)
 
