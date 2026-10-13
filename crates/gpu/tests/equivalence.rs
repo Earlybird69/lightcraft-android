@@ -443,6 +443,10 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 st(&[(0.2, 0.55), (0.5, 0.6), (0.8, 0.5)], true, false),
                 st(&[(0.3, 0.2), (0.6, 0.25)], false, false),
                 st(&[(0.5, 0.58)], true, true),
+                // the reference's brush (feather spread past the radius, flow building up), plain and Auto Mask
+                BrushStroke { feather: 100.0, flow: 50.0, spread: true, ..st(&[(0.15, 0.8), (0.7, 0.85)], false, false) },
+                BrushStroke { feather: 43.0, flow: 100.0, spread: true, ..st(&[(0.25, 0.4), (0.4, 0.75)], true, false) },
+                BrushStroke { feather: 0.0, flow: 100.0, spread: true, ..st(&[(0.75, 0.2)], false, true) },
             ];
             s.masks = vec![Mask {
                 components: vec![MaskComponent { hidden: false, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],

@@ -725,11 +725,16 @@ pub struct BrushStroke {
     pub density: f64,
     pub erase: bool,
     pub auto_mask: bool,
+    /// Painted as the reference's brush: feather spreads the edge out past the radius as well as
+    /// in, and flow sets how far a stroke builds up (`masks::brush_dabs`). Older strokes keep the
+    /// edge inside the radius and flow per dab.
+    #[serde(skip_serializing_if = "is_false")]
+    pub spread: bool,
 }
 
 impl Default for BrushStroke {
     fn default() -> Self {
-        Self { points: Vec::new(), size: 0.03, feather: 50.0, flow: 100.0, density: 100.0, erase: false, auto_mask: false }
+        Self { points: Vec::new(), size: 0.03, feather: 50.0, flow: 100.0, density: 100.0, erase: false, auto_mask: false, spread: false }
     }
 }
 

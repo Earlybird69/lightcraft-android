@@ -627,6 +627,43 @@ pub struct BrushDabs {
     pub erase: bool,
     /// Auto Mask: paint only pixels like the one under each dab, then snap to edges.
     pub auto: bool,
+    /// The reference's brush ([`BrushStroke::spread`](lightcraft_develop::BrushStroke)): a pixel
+    /// `d` from the nearest dab is covered by [`spread_cover`]`(d / r, fade)`, and the stroke takes
+    /// `(1 - exp(-strength · cover)) / norm`.
+    pub spread: bool,
+    pub fade: (f32, f32),
+    pub strength: f32,
+    pub norm: f32,
+}
+
+/// The reference brush's build-up at flow 100: `1 - exp(-SPREAD_DENSITY)` of the way at the
+/// stroke's core, normalized to full there (measured: flow 50 reaches 0.38, flow 17 0.07).
+const SPREAD_DENSITY: f32 = 4.5;
+
+/// [`BrushDabs::fade`] for feather `f` (0..1): the core (full cover, in radii) and the width of
+/// the Gaussian edge beyond it, as the reference's brush paints a straight stroke (measured over
+/// our test photos, 2026-10-13): feather 0 a hard edge at the radius (one pixel soft), 0.43 full
+/// to 0.65 r then a 0.43 r Gaussian, 1 a Gaussian from the centre line (e^-u²).
+pub fn spread_fade(f: f64, r: f64) -> (f32, f32) {
+    let f = f.clamp(0.0, 1.0);
+    let core = (1.0 - f * (0.68 + 0.32 * f)).max(0.0);
+    (core as f32, f.max(1.0 / r.max(1.0)) as f32)
+}
+
+/// How far past the core [`spread_cover`] reaches (it's under 0.002 beyond), in Gaussian widths.
+pub const SPREAD_REACH: f32 = 2.5;
+
+/// A pixel's cover from a dab `u` radii away: full in the core, a Gaussian beyond it.
+#[inline]
+pub fn spread_cover(u: f32, fade: (f32, f32)) -> f32 {
+    let t = ((u - fade.0) / fade.1).max(0.0);
+    if t >= SPREAD_REACH { 0.0 } else { (-t * t).exp() }
+}
+
+/// [`BrushDabs::strength`] for flow `f` (0..1): how far one stroke builds up.
+pub fn spread_strength(f: f64) -> f32 {
+    let f = f.clamp(0.0, 1.0);
+    (((4.28 * f).exp() - 1.0) / (4.28f64.exp() - 1.0)) as f32 * SPREAD_DENSITY
 }
 
 /// The dabs of stroke `s` in a `w × h` output.
@@ -657,6 +694,10 @@ pub fn brush_dabs(s: &BrushStroke, frame: &Frame, w: usize, h: usize) -> BrushDa
         density: (s.density / 100.0).clamp(0.0, 1.0) as f32,
         erase: s.erase,
         auto: s.auto_mask,
+        spread: s.spread,
+        fade: spread_fade(s.feather / 100.0, r),
+        strength: spread_strength(s.flow / 100.0),
+        norm: 1.0 - (-SPREAD_DENSITY).exp(),
     }
 }
 
@@ -728,30 +769,48 @@ fn rasterize_brush(strokes: &[BrushStroke], frame: &Frame, w: usize, h: usize, i
         return;
     }
     for s in strokes {
-        let BrushDabs { dabs, r, hard, flow, density: dens, erase, auto } = brush_dabs(s, frame, w, h);
+        let BrushDabs { dabs, r, hard, flow, density: dens, erase, auto, spread, fade, strength, norm } = brush_dabs(s, frame, w, h);
         let mut stroke_alpha = Plane::new(w, h);
+        // the reference's brush reaches past the radius (up to the fade's end)
+        let reach = if spread { r * f64::from(fade.0 + SPREAD_REACH * fade.1) } else { r };
         for d in &dabs {
             let refc = auto.then(|| {
                 let j = dab_pixel(*d, w, h);
                 (log_l.data[j], chromaticity(img.data[j]))
             });
-            let (x0, x1) = (((d.x - r).floor().max(0.0)) as usize, ((d.x + r).ceil().max(0.0) as usize).min(w));
-            let (y0, y1) = (((d.y - r).floor().max(0.0)) as usize, ((d.y + r).ceil().max(0.0) as usize).min(h));
+            let (x0, x1) = (((d.x - reach).floor().max(0.0)) as usize, ((d.x + reach).ceil().max(0.0) as usize).min(w));
+            let (y0, y1) = (((d.y - reach).floor().max(0.0)) as usize, ((d.y + reach).ceil().max(0.0) as usize).min(h));
             for y in y0..y1 {
                 for x in x0..x1 {
                     let dd = Point::new(x as f64 + 0.5, y as f64 + 0.5).dist(*d);
-                    if dd > r {
+                    if dd > reach {
                         continue;
                     }
-                    let mut a = if dd <= hard { 1.0 } else { 1.0 - smooth(hard as f32, r as f32, dd as f32) };
+                    let mut a = if spread {
+                        spread_cover((dd / r) as f32, fade)
+                    } else if dd <= hard {
+                        1.0
+                    } else {
+                        1.0 - smooth(hard as f32, r as f32, dd as f32)
+                    };
                     let i = y * w + x;
                     if let Some((rl, rch)) = refc {
                         a *= auto_similarity(log_l.data[i], chromaticity(img.data[i]), rl, rch);
                     }
                     let v = &mut stroke_alpha.data[i];
-                    // flow accumulates within a stroke up to density
-                    *v = (*v + a * flow * (1.0 - *v)).min(dens);
+                    if spread {
+                        // the stroke's coverage: its nearest dab's (built up below)
+                        *v = v.max(a);
+                    } else {
+                        // flow accumulates within a stroke up to density
+                        *v = (*v + a * flow * (1.0 - *v)).min(dens);
+                    }
                 }
+            }
+        }
+        if spread {
+            for v in &mut stroke_alpha.data {
+                *v = ((1.0 - (-strength * *v).exp()) / norm).min(dens);
             }
         }
         if auto {
@@ -857,6 +916,52 @@ mod tests {
         };
         let (hard, plain, soft) = (soft_px(-100.0), soft_px(0.0), soft_px(100.0));
         assert!(hard < plain && plain < soft, "transition widths {hard} < {plain} < {soft}");
+    }
+
+    /// The reference's brush (`spread`): a straight stroke's cross-section as it paints one
+    /// (measured over our test photos with a 53.5 px brush): feather 1 a hard edge at the radius,
+    /// 43 full to 0.75 r and gone at 1.5 r, 100 fading from the centre and still there past 1.5 r;
+    /// flow 50 reaches 0.38 at the core, 17 0.07. Feather visibly widens the edge.
+    #[test]
+    fn the_reference_brush_spreads_its_feather() {
+        let (w, h) = (400, 200);
+        let r = 40.0;
+        let across = |feather: f64, flow: f64| {
+            let s = BrushStroke {
+                points: vec![Point::new(0.1, 0.5), Point::new(0.9, 0.5)],
+                size: r / w as f64,
+                feather,
+                flow,
+                spread: true,
+                ..Default::default()
+            };
+            let a = shape_alpha(&MaskShape::Brush { strokes: vec![s] }, &frame(w, h), w, h, &Rgb32f::new(w, h), &Plane::new(w, h), 0.0, None);
+            move |u: f64| a.get(w / 2, (100.0 + u * r) as usize)
+        };
+        let hard = across(1.0, 100.0);
+        assert!(hard(0.0) > 0.99 && hard(0.9) > 0.99 && hard(1.1) < 0.01, "{} {}", hard(0.9), hard(1.1));
+        let mid = across(43.0, 100.0);
+        assert!(
+            mid(0.7) > 0.95 && (0.85..0.95).contains(&mid(1.0)) && (0.36..0.52).contains(&mid(1.27)) && mid(1.55) < 0.05,
+            "{} {} {} {}",
+            mid(0.7),
+            mid(1.0),
+            mid(1.27),
+            mid(1.55)
+        );
+        let soft = across(100.0, 100.0);
+        assert!(
+            soft(0.0) > 0.98 && (0.55..0.8).contains(&soft(1.12)) && (0.2..0.4).contains(&soft(1.57)) && soft(1.94) > 0.08,
+            "{} {} {}",
+            soft(1.12),
+            soft(1.57),
+            soft(1.94)
+        );
+        // a wider edge as feather goes up (where the old brush barely changed)
+        let edge = |f: &dyn Fn(f64) -> f32| (0..200).filter(|k| (0.1..0.9).contains(&f(*k as f64 / 100.0))).count();
+        assert!(edge(&hard) < 8 && edge(&mid) > 30 && edge(&soft) > edge(&mid) + 15, "{} {} {}", edge(&hard), edge(&mid), edge(&soft));
+        let (half, light) = (across(100.0, 50.0), across(100.0, 17.0));
+        assert!((0.33..0.43).contains(&half(0.0)) && (0.05..0.1).contains(&light(0.0)), "{} {}", half(0.0), light(0.0));
     }
 
     #[test]

@@ -175,8 +175,9 @@ class EditorState(val photoId: ULong, info: PhotoInfo, val device: DeviceOrigin?
     var maskSection by mutableStateOf<String?>(null)
     var maskErase by mutableStateOf(false)
     var maskBrushSize by mutableFloatStateOf(0.03f)
-    var maskBrushFeather by mutableFloatStateOf(50f)
-    var maskBrushFlow by mutableFloatStateOf(100f)
+    // the reference's brush defaults: fully feathered, half flow
+    var maskBrushFeather by mutableFloatStateOf(100f)
+    var maskBrushFlow by mutableFloatStateOf(50f)
 
     /** The mask tinted over the photo (the top bar's toggle). */
     var showMaskOverlay by mutableStateOf(false)
@@ -2550,6 +2551,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             .put("feather", ed.maskBrushFeather.toDouble())
             .put("flow", ed.maskBrushFlow.toDouble())
             .put("erase", ed.maskErase)
+            // painted as the reference's brush: the feather spreads past the radius, flow builds up
+            .put("spread", true)
         edit(after = { refreshMasks() }) { it.execute("mask.brushStroke", params.toString()) }
     }
 

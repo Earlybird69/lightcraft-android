@@ -243,6 +243,13 @@ fn masks_crop_and_render() {
     let d = active_dev(&s);
     assert_eq!(d.masks.len(), 1);
     assert_eq!(d.masks[0].components.len(), 2);
+    // the reference's brush is kept as such (and saved only when set)
+    s.execute("mask.brushStroke", &json!({"points": [[0.6, 0.6], [0.7, 0.7]], "feather": 100, "flow": 50, "spread": true})).unwrap();
+    let d = active_dev(&s);
+    let lightcraft_develop::MaskShape::Brush { strokes } = &d.masks[0].components[1].shape else { panic!() };
+    assert_eq!(strokes.iter().map(|st| st.spread).collect::<Vec<_>>(), [false, true]);
+    let saved = serde_json::to_value(&strokes[0]).unwrap();
+    assert!(saved.get("spread").is_none() && serde_json::to_value(&strokes[1]).unwrap()["spread"] == json!(true));
     s.execute("crop.aspect", &json!({"aspect": "1x1"})).unwrap();
     s.execute("crop.straighten", &json!({"angle": 5.0})).unwrap();
     let id = s.active().unwrap();
