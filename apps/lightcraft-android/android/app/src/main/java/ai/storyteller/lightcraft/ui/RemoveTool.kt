@@ -135,6 +135,8 @@ fun RemoveOverlay(vm: AppViewModel, ed: EditorState, geometry: ViewGeometry, ima
                         val ev = awaitPointerEvent()
                         val c = ev.changes.firstOrNull() ?: return@withTimeoutOrNull "tap"
                         if (!c.pressed) return@withTimeoutOrNull "tap"
+                        // a second finger: the photo moves, nothing here
+                        if (ev.changes.count { it.pressed } > 1 || c.isConsumed) return@withTimeoutOrNull "photo"
                         last = c.position
                         if ((c.position - down.position).getDistance() > viewConfiguration.touchSlop) {
                             c.consume()
@@ -145,6 +147,7 @@ fun RemoveOverlay(vm: AppViewModel, ed: EditorState, geometry: ViewGeometry, ima
                     "tap"
                 }
                 when (start) {
+                    "photo" -> {}
                     null -> {
                         // held on a spot: it's picked and its menu opens; elsewhere nothing
                         if (hit >= 0) {
@@ -170,6 +173,7 @@ fun RemoveOverlay(vm: AppViewModel, ed: EditorState, geometry: ViewGeometry, ima
                             val ev = awaitPointerEvent()
                             val c = ev.changes.firstOrNull() ?: break
                             if (!c.pressed) break
+                            if (ev.changes.count { it.pressed } > 1 || c.isConsumed) break
                             last = c.position
                             dragBy = last - down.position
                             c.consume()
@@ -186,6 +190,11 @@ fun RemoveOverlay(vm: AppViewModel, ed: EditorState, geometry: ViewGeometry, ima
                             val ev = awaitPointerEvent()
                             val c = ev.changes.firstOrNull() ?: break
                             if (!c.pressed) break
+                            // a second finger: the photo moves instead, and the stroke is dropped
+                            if (ev.changes.count { it.pressed } > 1 || c.isConsumed) {
+                                stroke = emptyList()
+                                return@awaitEachGesture
+                            }
                             if ((c.position - path.last()).getDistance() > 4f) {
                                 path += c.position
                                 stroke = path.toList()

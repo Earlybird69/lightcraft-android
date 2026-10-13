@@ -142,6 +142,14 @@ class EditorState(val photoId: ULong, info: PhotoInfo, val device: DeviceOrigin?
     var crop by mutableStateOf<CropFrame?>(null)
     var cropTab by mutableStateOf("aspect")
 
+    /**
+     * A crop frame waiting for its picture: after a turn, flip or Upright the frame takes the view
+     * render asked for at [pendingCropSeq] or later, so the two show together in one frame (an old
+     * picture under the new frame showed at the wrong size for a moment).
+     */
+    var pendingCrop: CropFrame? = null
+    var pendingCropSeq = 0L
+
     /** The social format last picked (`ig.story`…): its name is the pill's while the crop keeps its shape. */
     var cropFormat by mutableStateOf<String?>(null)
 
@@ -626,7 +634,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun presetPreview(photo: PhotoInfo, preset: String): ImageBitmap? {
         val e = engine ?: return null
         return looks.load(presetKey(photo, preset)) {
-            withContext(e.thumbnails) {
+            withContext(e.looks) {
                 runCatching { e.session.renderPresetThumbnail(photo.id, preset, LOOK_EDGE.toUInt()).toImageBitmap() }.getOrNull()
             }
         }
@@ -636,7 +644,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun profilePreview(photo: PhotoInfo, profile: String): ImageBitmap? {
         val e = engine ?: return null
         return looks.load(profileKey(photo, profile)) {
-            withContext(e.thumbnails) {
+            withContext(e.looks) {
                 runCatching { e.session.renderProfileThumbnail(photo.id, profile, LOOK_EDGE.toUInt()).toImageBitmap() }.getOrNull()
             }
         }
@@ -1050,7 +1058,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             if (slideshow == i && img != null) slideshowImage = img
             photos.getOrNull((i + 1) % photos.size)?.let { n ->
-                launch(e.thumbnails) { runCatching { e.session.prefetchView(n.id, size.width.toUInt(), size.height.toUInt()) } }
+                launch(e.prefetch) { runCatching { e.session.prefetchView(n.id, size.width.toUInt(), size.height.toUInt()) } }
             }
         }
     }
@@ -1786,7 +1794,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val metrics = getApplication<Application>().resources.displayMetrics
             val edge = max(metrics.widthPixels, metrics.heightPixels).coerceAtMost(2560).toUInt()
-            val quick = withContext(e.thumbnails) { runCatching { e.session.renderQuickView(p.id, edge) }.getOrNull()?.let { it to it.toImageBitmap() } }
+            val quick = withContext(e.looks) { runCatching { e.session.renderQuickView(p.id, edge) }.getOrNull()?.let { it to it.toImageBitmap() } }
             if (quick != null && editor === ed && !ed.rendered) {
                 ed.image = quick.second
                 ed.histogram = quick.first.histogram
@@ -1915,9 +1923,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         ed.histogram = histogram
                         ed.rendered = true
                         ed.showingCropView = req.crop
+                        takePendingCrop(ed, req.seq)
                         if (!req.draft && !req.before && !req.crop && ed.adjusting == null) prefetchNeighbours(e, ed, req.width, req.height)
                     }
-                    .onFailure { if (!req.draft) say("Can't show ${ed.info.fileName}: ${it.message}") }
+                    .onFailure {
+                        takePendingCrop(ed, req.seq)
+                        if (!req.draft) say("Can't show ${ed.info.fileName}: ${it.message}")
+                    }
                 ed.rendering = false
             }
         }
@@ -1932,7 +1944,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (i < 0) return
         for (n in listOfNotNull(photos.getOrNull(i + 1), photos.getOrNull(i - 1))) {
             if (!prefetched.add("${n.id}:${n.settingsHash}:${width}x$height")) continue
-            viewModelScope.launch(e.thumbnails) { runCatching { e.session.prefetchView(n.id, width.toUInt(), height.toUInt()) } }
+            viewModelScope.launch(e.prefetch) { runCatching { e.session.prefetchView(n.id, width.toUInt(), height.toUInt()) } }
         }
     }
 
@@ -2085,7 +2097,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val round = ++maskThumbRound
         val ids = ed.masks.map { it.id }
         viewModelScope.launch {
-            val thumbs = withContext(e.thumbnails) {
+            val thumbs = withContext(e.looks) {
                 ids.mapNotNull { id ->
                     if (round != maskThumbRound) return@withContext null
                     runCatching { e.session.renderMaskThumbnail(ed.photoId, id, MASK_THUMB_EDGE.toUInt()).toImageBitmap() }.getOrNull()?.let { id to it }
@@ -2928,6 +2940,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         ed.tool = ed.toolBeforeCrop
         ed.toolBeforeCrop = null
         ed.crop = null
+        ed.pendingCrop = null
         when (ed.tool) {
             MainTool.MASKING -> refreshMasks()
             MainTool.REMOVE -> refreshSpots()
@@ -2939,7 +2952,32 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun cropCommand(id: String, params: JSONObject = JSONObject(), photo: Boolean = false) {
         val ed = editor ?: return
         if (photo) params.put("ids", JSONArray().put(ed.photoId.toLong()))
-        edit(after = { refreshCrop() }) { it.execute(id, params.toString()) }
+        // a turn, flip or Upright changes the picture under the frame: the new frame waits for it
+        if (!photo && id != "geometry.upright") {
+            edit(after = { refreshCrop() }) { it.execute(id, params.toString()) }
+            return
+        }
+        val e = engine ?: return
+        viewModelScope.launch {
+            runCatching { e.command { execute(id, params.toString()); snapshot(ed.photoId) to cropFrame(ed.photoId) } }
+                .onSuccess { (snap, frame) ->
+                    ed.update(snap)
+                    requestView()
+                    if (ed.tool == MainTool.CROP) {
+                        ed.pendingCrop = frame
+                        ed.pendingCropSeq = requestSeq
+                    }
+                }
+                .onFailure { say(it.message) }
+        }
+    }
+
+    /** The waiting crop frame, once the render it waits for (request [seq] or later) is in. */
+    private fun takePendingCrop(ed: EditorState, seq: Long) {
+        val frame = ed.pendingCrop ?: return
+        if (seq < ed.pendingCropSeq) return
+        ed.pendingCrop = null
+        if (ed.tool == MainTool.CROP) ed.crop = frame
     }
 
     fun setCropAspect(aspect: String) {
@@ -3095,7 +3133,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun settingsPreview(settings: String, edge: Int): ImageBitmap? {
         val ed = editor ?: return null
         val e = engine ?: return null
-        return withContext(e.thumbnails) {
+        return withContext(e.looks) {
             runCatching { e.session.renderResetThumbnail(ed.photoId, "import", settings, edge.toUInt()).toImageBitmap() }.getOrNull()
         }
     }
@@ -3104,7 +3142,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun modifiedGroups(): Set<String> {
         val ed = editor ?: return emptySet()
         val e = engine ?: return emptySet()
-        return withContext(e.thumbnails) { runCatching { e.session.modifiedGroups(ed.photoId).toSet() }.getOrDefault(emptySet()) }
+        return withContext(e.looks) { runCatching { e.session.modifiedGroups(ed.photoId).toSet() }.getOrDefault(emptySet()) }
     }
 
     /** The groups Copy Settings chose last (the engine's default ones at first). */
@@ -3120,7 +3158,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun previousPreview(basics: Boolean): ImageBitmap? {
         val ed = editor ?: return null
         val e = engine ?: return null
-        return withContext(e.thumbnails) {
+        return withContext(e.looks) {
             runCatching { e.session.renderPreviousThumbnail(ed.photoId, if (basics) BASIC_GROUPS else emptyList(), CHOICE_EDGE.toUInt()).toImageBitmap() }.getOrNull()
         }
     }
@@ -3145,7 +3183,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val ed = editor ?: return null
         val e = engine ?: return null
         val settings = if (to == "open") ed.openSettings ?: return null else null
-        return withContext(e.thumbnails) {
+        return withContext(e.looks) {
             runCatching { e.session.renderResetThumbnail(ed.photoId, if (to == "all") "default" else to, settings, CHOICE_EDGE.toUInt()).toImageBitmap() }.getOrNull()
         }
     }

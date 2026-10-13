@@ -112,6 +112,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.input.pointer.util.VelocityTracker
@@ -353,7 +354,13 @@ private fun SidewaysEditor(vm: AppViewModel, ed: EditorState, createPreset: () -
             val (w, h) = photoSize(ed) ?: (1f to 1f)
             val fitted = min(areaW.toFloat(), areaH * w / h).roundToInt()
             val panel = (side - columns).coerceAtLeast(0)
-            val shrink = if (panel > 0) min(panel, max(areaW - fitted, with(density) { 61.dp.roundToPx() })) else 0
+            // Crop keeps clear of its whole panel, as the reference's (its frame, handles and buttons
+            // all on the photo's side); elsewhere the panel may lie over a wide photo's right side
+            val shrink = when {
+                panel <= 0 -> 0
+                ed.tool == MainTool.CROP -> panel
+                else -> min(panel, max(areaW - fitted, with(density) { 61.dp.roundToPx() }))
+            }
             IntRect(0, status, areaW - shrink, height - foot)
         }
         val fitWidth by animateIntAsState(fit.width, tween(350, easing = LinearOutSlowInEasing), label = "fit width")
@@ -1229,10 +1236,23 @@ private fun PhotoView(vm: AppViewModel, ed: EditorState, modifier: Modifier, sid
     val targeting = target != null && ed.tool == MainTool.EDIT &&
         ((target == "curve" && curving) || (target != "curve" && ed.section == EditSection.COLOR && ed.sub == "mix"))
     val cropping = ed.tool == MainTool.CROP || ed.tool == MainTool.REMOVE || (ed.tool == MainTool.MASKING && ed.selectedMask != null) || curving || targeting
-    LaunchedEffect(cropping) {
-        if (cropping) {
+    // a sideways swipe opens the next photo only where the reference allows it: not in Presets,
+    // Profiles, Masking, Remove or Crop (there a slip of the finger shouldn't leave the photo)
+    val swipeable = when (ed.tool) {
+        MainTool.PRESETS, MainTool.MASKING, MainTool.REMOVE, MainTool.CROP -> false
+        MainTool.EDIT -> ed.section != EditSection.PROFILES
+        else -> true
+    }
+    // Masking and Remove keep the reference's "free scroll": one finger is the tool's, two move and
+    // zoom the photo, which may then be dragged well past its edges (even unzoomed, from under a panel)
+    val freeScroll = ed.tool == MainTool.MASKING || ed.tool == MainTool.REMOVE
+    LaunchedEffect(cropping, freeScroll) {
+        if (cropping && !freeScroll) {
             zoomAnim.snapTo(1f)
             panAnim.snapTo(Offset.Zero)
+        } else if (!freeScroll && zoomAnim.value <= 1f && panAnim.value != Offset.Zero) {
+            // out of free scroll, an unzoomed photo goes back to its place
+            panAnim.animateTo(Offset.Zero, tween(250, easing = AccelerateDecelerate))
         }
     }
     // once a zoom settles, render the view at the new size
@@ -1250,10 +1270,36 @@ private fun PhotoView(vm: AppViewModel, ed: EditorState, modifier: Modifier, sid
             .background(Lc.canvas)
             .clipToBounds()
             .onSizeChanged { vm.onViewport(it) }
-            .pointerInput(ed.photoId, cropping) {
+            .pointerInput(ed.photoId, freeScroll) {
+                if (!freeScroll) return@pointerInput
+                fun clamp(o: Offset, z: Float): Offset {
+                    val b = freeBounds(size, ed.image, z)
+                    return Offset(o.x.coerceIn(-b.x, b.x), o.y.coerceIn(-b.y, b.y))
+                }
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    do {
+                        // seen before the tool's overlay: two fingers are the photo's, and the overlay lets go
+                        val ev = awaitPointerEvent(PointerEventPass.Initial)
+                        if (ev.changes.count { it.pressed } >= 2) {
+                            val z0 = zoomAnim.value
+                            val z1 = (z0 * ev.calculateZoom()).coerceIn(1f, MAX_ZOOM)
+                            val k = z1 / z0
+                            val c = ev.calculateCentroid(useCurrent = true) - Offset(size.width / 2f, size.height / 2f)
+                            val o = clamp(c * (1f - k) + panAnim.value * k + ev.calculatePan(), z1)
+                            scope.launch {
+                                zoomAnim.snapTo(z1)
+                                panAnim.snapTo(o)
+                            }
+                            ev.changes.forEach { it.consume() }
+                        }
+                    } while (ev.changes.any { it.pressed })
+                }
+            }
+            .pointerInput(ed.photoId, cropping, swipeable, freeScroll) {
                 if (cropping) return@pointerInput
                 // the furthest a zoomed photo may move, and where a zoom keeps the point under the fingers
-                fun bounds(z: Float) = Offset(size.width * (z - 1f) / 2f, size.height * (z - 1f) / 2f)
+                fun bounds(z: Float) = if (freeScroll) freeBounds(size, ed.image, z) else Offset(size.width * (z - 1f) / 2f, size.height * (z - 1f) / 2f)
                 fun clamp(o: Offset, z: Float): Offset {
                     val b = bounds(z)
                     return Offset(o.x.coerceIn(-b.x, b.x), o.y.coerceIn(-b.y, b.y))
@@ -1334,7 +1380,10 @@ private fun PhotoView(vm: AppViewModel, ed: EditorState, modifier: Modifier, sid
                         val ev = awaitPointerEvent()
                         val fingers = ev.changes.count { it.pressed }
                         ev.changes.firstOrNull { it.id == down.id }?.let { tracker.addPosition(it.uptimeMillis, it.position) }
-                        if (fingers >= 2 || zoomAnim.value > 1f) {
+                        if (freeScroll && fingers >= 2) {
+                            // the free scroll's own handler has it
+                            pinched = true
+                        } else if (fingers >= 2 || zoomAnim.value > 1f) {
                             pinched = pinched || fingers >= 2
                             val z0 = zoomAnim.value
                             val z1 = (z0 * ev.calculateZoom()).coerceIn(1f, MAX_ZOOM)
@@ -1345,7 +1394,7 @@ private fun PhotoView(vm: AppViewModel, ed: EditorState, modifier: Modifier, sid
                                 panAnim.snapTo(o)
                             }
                             ev.changes.forEach { if (it.positionChanged()) it.consume() }
-                        } else if (!pinched) {
+                        } else if (!pinched && swipeable) {
                             dx += ev.calculatePan().x
                             // a swipe moves the photo with the finger, a neighbour following 16 dp behind
                             val edge = !vm.hasNeighbour(if (dx < 0) 1 else -1)
@@ -1354,6 +1403,7 @@ private fun PhotoView(vm: AppViewModel, ed: EditorState, modifier: Modifier, sid
                         }
                     } while (ev.changes.any { it.pressed })
                     val v = tracker.calculateVelocity()
+                    if (freeScroll && pinched) return@awaitEachGesture
                     if (zoomAnim.value > 1f) {
                         // a zoomed photo coasts on after a flick, stopping at its edges
                         val b = bounds(zoomAnim.value)
@@ -1361,7 +1411,7 @@ private fun PhotoView(vm: AppViewModel, ed: EditorState, modifier: Modifier, sid
                         scope.launch { panAnim.animateDecay(Offset(v.x, v.y), exponentialDecay()) }
                         return@awaitEachGesture
                     }
-                    if (pinched) return@awaitEachGesture
+                    if (pinched || !swipeable) return@awaitEachGesture
                     val step = if (dx < 0) 1 else -1
                     // past 60 % of the way, or flicked that way: the neighbour slides in and opens
                     val commit = vm.hasNeighbour(step) && (abs(dx) > size.width * 0.6f || (abs(v.x) > flingSpeed && v.x * dx > 0 && abs(dx) > slop))
@@ -1426,15 +1476,22 @@ private fun PhotoView(vm: AppViewModel, ed: EditorState, modifier: Modifier, sid
         // the reference's File Info: where the photo is in the grid, its name and when it was taken; with no tool open
         if (vm.viewOverlay == "info" && ed.tool == null) FileInfo(vm, ed, Modifier.align(Alignment.TopStart).padding(start = 10.dp, top = 62.5.dp))
         val geometry = ed.geometry
+        // the tools' overlays moved and scaled with the photo (their touches come back in the photo's place)
+        val onPhoto = Modifier.graphicsLayer {
+            scaleX = zoomAnim.value
+            scaleY = zoomAnim.value
+            translationX = panAnim.value.x
+            translationY = panAnim.value.y
+        }
         val mask = ed.masks.firstOrNull { it.id == ed.selectedMask }
         val picker = ed.rangePicker
         if (ed.tool == MainTool.MASKING && picker != null && geometry != null && image != null && !ed.showingCropView) {
-            RangePickerOverlay(vm, ed, picker, ed.masks.firstOrNull { it.id == picker.mask }, geometry, IntSize(image.width, image.height), Modifier.fillMaxSize())
+            RangePickerOverlay(vm, ed, picker, ed.masks.firstOrNull { it.id == picker.mask }, geometry, IntSize(image.width, image.height), Modifier.fillMaxSize().then(onPhoto))
         } else if (ed.tool == MainTool.MASKING && ed.maskSection != "new" && mask != null && geometry != null && image != null && !ed.showingCropView) {
-            MaskOverlay(vm, ed, mask, geometry, IntSize(image.width, image.height), Modifier.fillMaxSize())
+            MaskOverlay(vm, ed, mask, geometry, IntSize(image.width, image.height), Modifier.fillMaxSize().then(onPhoto))
         }
         if (ed.tool == MainTool.REMOVE && !ed.showingCropView && geometry != null && image != null) {
-            RemoveOverlay(vm, ed, geometry, IntSize(image.width, image.height), Modifier.fillMaxSize())
+            RemoveOverlay(vm, ed, geometry, IntSize(image.width, image.height), Modifier.fillMaxSize().then(onPhoto))
         }
         // Guided Upright: its guides on the photo without its crop, and a finger to draw more
         if (ed.tool == MainTool.CROP && ed.cropTab == "geometry" && ed.state?.upright == "guided" && ed.showingCropView && image != null) {
@@ -1467,6 +1524,17 @@ private fun PhotoView(vm: AppViewModel, ed: EditorState, modifier: Modifier, sid
 
 /** How far in a pinch or a double-tap may take the photo. */
 private const val MAX_ZOOM = 8f
+
+/**
+ * How far the photo may move in free scroll (Masking, Remove), either way from the middle, at zoom
+ * [z] in a view of [view]: it keeps covering the middle fifth of the view, the reference's 40 % inset.
+ */
+private fun freeBounds(view: IntSize, image: ImageBitmap?, z: Float): Offset {
+    val fit = if (image == null) 1f else min(view.width / image.width.toFloat(), view.height / image.height.toFloat())
+    val w = (image?.width ?: view.width) * fit
+    val h = (image?.height ?: view.height) * fit
+    return Offset(max(0f, w * z / 2f - view.width * 0.1f), max(0f, h * z / 2f - view.height * 0.1f))
+}
 
 /**
  * Targeted adjustment over the photo: press on what to adjust, then drag up to raise it or down to

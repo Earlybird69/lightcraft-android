@@ -38,6 +38,15 @@ class Engine private constructor(
     /** Grid thumbnails (renders of up to 512 px, or the cache). */
     val thumbnails: CoroutineDispatcher = Dispatchers.Default.limitedParallelism(2)
 
+    /**
+     * What the open editor shows besides its view: preset, profile and version previews, the masks'
+     * pictures, the quick view. Small renders, never queued behind [prefetch] or the grid's.
+     */
+    val looks: CoroutineDispatcher = Dispatchers.Default.limitedParallelism(2)
+
+    /** Neighbours readied ahead (a full source decode and a screen-size render each): one at a time. */
+    val prefetch: CoroutineDispatcher = Dispatchers.Default.limitedParallelism(1)
+
     /** Run [block] on the session, after the commands issued before it. */
     suspend fun <T> command(block: MobileSession.() -> T): T = withContext(commands) { session.block() }
 

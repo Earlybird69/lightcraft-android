@@ -1209,6 +1209,11 @@ fun MaskOverlay(vm: AppViewModel, ed: EditorState, mask: MaskInfo, geometry: Vie
                             val ev = awaitPointerEvent()
                             val c = ev.changes.firstOrNull() ?: break
                             if (!c.pressed) break
+                            // a second finger: the photo moves instead, and the stroke is dropped
+                            if (ev.changes.count { it.pressed } > 1 || c.isConsumed) {
+                                stroke = emptyList()
+                                return@awaitEachGesture
+                            }
                             if ((c.position - path.last()).getDistance() > 4f) {
                                 path += c.position
                                 stroke = path.toList()
@@ -1231,6 +1236,8 @@ fun MaskOverlay(vm: AppViewModel, ed: EditorState, mask: MaskInfo, geometry: Vie
                                 val ev = awaitPointerEvent()
                                 val c = ev.changes.firstOrNull() ?: break
                                 if (!c.pressed) break
+                                // a second finger: the photo's
+                                if (ev.changes.count { it.pressed } > 1 || c.isConsumed) break
                                 c.consume()
                                 val (x, y) = map.photo(c.position)
                                 vm.dragShape(draggedShape(kind, start, handle, x - x0, y - y0, x, y, geometry.width, geometry.height, long))
