@@ -123,6 +123,16 @@
 
 <br>
 
+## Architecture
+
+<p align="center">
+  <img src="docs/images/architecture.png" alt="Architecture diagram: the photographer uses the Android app (App navigation, which shows the Photo editor and the Photo library and uses the App state, which calls the Session bridge); the editor adjusts Develop controls, selects Presets and profiles and configures Masking, offers Denoise and HDR and panorama, and exports; the Session bridge opens the Mobile Rust API, which uses Photo sources and the Catalog and search the library browses; Photo sources read Photo metadata, render with the Develop pipeline (which produces the Export) and decode with the Image codecs" width="700">
+  <br>
+  <sub>How the app and the engine fit together. Generated with <a href="https://gitdiagram.com/artcraft-android/lightcraft-android">GitDiagram</a>.</sub>
+</p>
+
+<br>
+
 ## Planned features
 
 LightCraft for Android is in beta.
