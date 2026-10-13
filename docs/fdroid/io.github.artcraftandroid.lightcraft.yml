@@ -21,8 +21,8 @@ Builds:
       - apt-get install -y gcc libc-dev rustup
     gradle:
       - yes
-    output: build/outputs/apk/release/app-release-unsigned.apk
-    binary: https://github.com/artcraft-android/lightcraft-android/releases/download/v%v/lightcraft-android-%v-armeabi-v7a.apk
+    binary: 
+      https://github.com/artcraft-android/lightcraft-android/releases/download/v%v/lightcraft-android-%v-armeabi-v7a.apk
     prebuild:
       - rustup toolchain install $(sed -n -E 's/^channel = "(.*)"/\1/p' ../../../../rust-toolchain.toml)
         --profile minimal --target armv7-linux-androideabi
@@ -42,8 +42,8 @@ Builds:
       - apt-get install -y gcc libc-dev rustup
     gradle:
       - yes
-    output: build/outputs/apk/release/app-release-unsigned.apk
-    binary: https://github.com/artcraft-android/lightcraft-android/releases/download/v%v/lightcraft-android-%v.apk
+    binary: 
+      https://github.com/artcraft-android/lightcraft-android/releases/download/v%v/lightcraft-android-%v.apk
     prebuild:
       - rustup toolchain install $(sed -n -E 's/^channel = "(.*)"/\1/p' ../../../../rust-toolchain.toml)
         --profile minimal --target aarch64-linux-android
@@ -61,6 +61,7 @@ UpdateCheckMode: Tags
 VercodeOperation:
   - '%c * 10 + 1'
   - '%c * 10 + 2'
-UpdateCheckData: apps/lightcraft-android/android/gradle.properties|lightcraft\.versionCode=(\d+)|apps/lightcraft-android/android/gradle.properties|lightcraft\.version=(.+)
+UpdateCheckData: 
+  apps/lightcraft-android/android/gradle.properties|lightcraft\.versionCode=(\d+)|.|lightcraft\.version=(.+)
 CurrentVersion: 0.0.3-beta
 CurrentVersionCode: 3012
