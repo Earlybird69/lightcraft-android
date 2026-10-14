@@ -28,6 +28,12 @@ class Engine private constructor(
     val libraryDir: File?,
     /** Why the library on disk could not be used, when the session is the in-memory demo instead. */
     val problem: String?,
+    /**
+     * The longest a zoomed view's frame may be (px): a phone with room for it decodes the photo's
+     * every pixel for a sharp view to 100 % and beyond; others stay with the 2560 px preview the
+     * view is made from (an original decoded whole takes about half a gigabyte more).
+     */
+    val zoomEdge: Int,
 ) {
     /** Commands run one at a time, in the order the UI issued them. */
     val commands: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(1)
@@ -71,7 +77,9 @@ class Engine private constructor(
             // the system calls low-RAM.
             val am = context.getSystemService(ActivityManager::class.java)
             if (am?.isLowRamDevice == true) session.setMemoryBudget(256u)
-            return Engine(session, staging, library.takeIf { problem == null }, problem)
+            val ram = am?.let { ActivityManager.MemoryInfo().also(it::getMemoryInfo).totalMem } ?: 0L
+            val zoomEdge = if (ram >= 7L shl 30) Int.MAX_VALUE else 2560
+            return Engine(session, staging, library.takeIf { problem == null }, problem, zoomEdge)
         }
     }
 }

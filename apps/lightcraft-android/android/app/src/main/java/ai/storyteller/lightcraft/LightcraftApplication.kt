@@ -19,10 +19,13 @@ class LightcraftApplication : Application() {
      */
     val engine: Deferred<Result<Engine>> by lazy { scope.async { runCatching { Engine.open(this@LightcraftApplication) } } }
 
+    // (the RUNNING_ levels: phones before Android 14 also say when memory runs low in the foreground)
+    @Suppress("DEPRECATION")
     @OptIn(ExperimentalCoroutinesApi::class)
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN && engine.isCompleted) {
+        val low = level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN || level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW || level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+        if (low && engine.isCompleted) {
             engine.getCompleted().getOrNull()?.trimMemory()
         }
     }

@@ -40,8 +40,10 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -236,6 +238,12 @@ class EditorState(val photoId: ULong, info: PhotoInfo, val device: DeviceOrigin?
     var lastPreset by mutableStateOf<PresetInfo?>(null)
     var presetAmount by mutableFloatStateOf(100f)
     var image by mutableStateOf<ImageBitmap?>(null)
+
+    /**
+     * Zoomed in, the part of the photo on screen rendered sharp, drawn over [image] (the reference's
+     * foreground layer over its whole-photo one): only while it belongs to the [image] shown.
+     */
+    var detail by mutableStateOf<ViewDetail?>(null)
     var histogram by mutableStateOf<ImageHistogram?>(null)
     var showingBefore by mutableStateOf(false)
 
@@ -270,6 +278,9 @@ class EditorState(val photoId: ULong, info: PhotoInfo, val device: DeviceOrigin?
     internal var viewport = IntSize.Zero
     internal var zoom = 1f
 
+    /** How far the zoomed photo is moved from the middle of the view (px). */
+    internal var pan = Offset.Zero
+
     /** The view has the photo's own render (not a stand-in). */
     internal var rendered = false
 
@@ -278,6 +289,15 @@ class EditorState(val photoId: ULong, info: PhotoInfo, val device: DeviceOrigin?
 
     fun control(id: String): DevelopControl? = controls.firstOrNull { it.id == id }
 }
+
+/**
+ * [image]: the `window` (in pixels of the zoomed frame) of the view as it would look rendered whole
+ * at `frame` (the photo fitted to that size), sharp where the whole-photo render [base] is
+ * magnified.
+ */
+class ViewDetail(val image: ImageBitmap, val frame: IntSize, val window: IntRect, val base: ImageBitmap)
+
+private fun IntRect.covers(r: IntRect) = r.left >= left && r.top >= top && r.right <= right && r.bottom <= bottom
 
 /** Rendered images by key, at most [bytes] of them (grid thumbnails, preset and profile looks). */
 class BitmapCache(bytes: Int) {
@@ -546,9 +566,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private data class ViewRequest(val photo: ULong, val width: Int, val height: Int, val draft: Boolean, val before: Boolean, val crop: Boolean, val mask: MaskOverlay?, val seq: Long)
 
+    /** The part of the zoomed view to render sharp over [base] (see [ViewDetail]). */
+    private class DetailRequest(val photo: ULong, val frame: IntSize, val window: IntRect, val before: Boolean, val mask: MaskOverlay?, val base: ImageBitmap)
+
     /** The latest view the editor wants: a busy render loop skips straight to the newest. */
     private val viewRequests = MutableStateFlow<ViewRequest?>(null)
     private var requestSeq = 0L
+
+    /** The latest sharp part a zoomed view wants (null: none). */
+    private val detailRequests = MutableStateFlow<DetailRequest?>(null)
 
     init {
         viewModelScope.launch {
@@ -566,6 +592,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         presets = pr
                         profiles = pf
                     }
+                    launch { renderDetails(e) }
                     renderViews(e)
                 }
                 .onFailure { loadError = it.message ?: it.toString() }
@@ -1868,13 +1895,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         requestView()
     }
 
-    /** Pinch zoom settled at [zoom]: zoomed in, the view renders larger so it stays sharp. */
-    fun onZoom(zoom: Float) {
+    /**
+     * The photo settled at [zoom], moved by [pan] (a pinch, a drag or a double-tap ended): zoomed in,
+     * the part on screen is rendered sharp over the whole photo (the reference's two layers), so a
+     * zoomed view costs what the screen shows, whatever the zoom.
+     */
+    fun onViewMoved(zoom: Float, pan: Offset) {
         val ed = editor ?: return
-        val z = zoom.coerceIn(1f, 8f)
-        if (abs(z - ed.zoom) < 0.05f) return
-        ed.zoom = z
-        requestView()
+        ed.zoom = zoom.coerceAtLeast(1f)
+        ed.pan = pan
+        requestDetail()
     }
 
     fun showBefore(before: Boolean) {
@@ -1888,18 +1918,62 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val ed = editor ?: return
         val vp = ed.viewport
         if (vp.width <= 0 || vp.height <= 0) return
-        // drafts (slider drags) at 0.6 of the size, like the desktop loupe; zoomed in, up to the
-        // engine's 2560 px previews
-        val scale = if (draft) 0.6f else ed.zoom.coerceAtMost(2560f / max(vp.width, vp.height)).coerceAtLeast(1f)
+        // the whole photo at the view's size (zoomed in, [requestDetail] adds the part on screen);
+        // drafts (slider drags) at 0.6 of it, like the desktop loupe
+        val scale = if (draft) 0.6f else 1f
         val w = (vp.width * scale).roundToInt().coerceAtLeast(1)
         val h = (vp.height * scale).roundToInt().coerceAtLeast(1)
-        val mask = ed.selectedMask.takeIf { ed.tool == MainTool.MASKING && ed.showMaskOverlay }
-            // Color Overlay draws as the reference's does (the engine's `tint`)
-            ?.let { MaskOverlay(it, if (maskOverlayMode == "color") "tint" else maskOverlayMode, maskOverlayColor.toUInt(), maskOverlayOpacity.toUByte()) }
+        val mask = viewMask(ed)
         // Crop's Aspect shows the whole photo under its frame; its Geometry, the photo as it comes out
         // Guided Upright draws its guides on the photo as the crop tool shows it
         val cropView = ed.tool == MainTool.CROP && (ed.cropTab != "geometry" || ed.state?.upright == "guided")
         viewRequests.value = ViewRequest(ed.photoId, w, h, draft, ed.showingBefore && ed.tool != MainTool.CROP, cropView, mask, ++requestSeq)
+    }
+
+    /** The mask the view shows over the photo, as the masking options ask (none outside Masking). */
+    private fun viewMask(ed: EditorState): MaskOverlay? = ed.selectedMask.takeIf { ed.tool == MainTool.MASKING && ed.showMaskOverlay }
+        // Color Overlay draws as the reference's does (the engine's `tint`)
+        ?.let { MaskOverlay(it, if (maskOverlayMode == "color") "tint" else maskOverlayMode, maskOverlayColor.toUInt(), maskOverlayOpacity.toUByte()) }
+
+    /**
+     * Zoomed in, ask for the part of the photo on screen at the zoom (never past the photo's own
+     * pixels: beyond 100 % it is magnified), to draw sharp over the whole-photo render.
+     */
+    private fun requestDetail() {
+        val ed = editor ?: return
+        val base = ed.image
+        val vp = ed.viewport
+        val wanted = base?.takeIf { !ed.showingCropView && ed.tool != MainTool.CROP }
+            ?.let { detailWindow(vp, IntSize(it.width, it.height), ed.info.width.toInt(), engine?.zoomEdge ?: 2560, ed.zoom, ed.pan) }
+        if (base == null || wanted == null) {
+            detailRequests.value = null
+            ed.detail = null
+            return
+        }
+        val (frame, rect) = wanted
+        val current = ed.detail
+        // what is on screen is already there
+        if (current != null && current.base === base && current.frame == frame && current.window.covers(rect)) return
+        detailRequests.value = DetailRequest(ed.photoId, frame, rect, ed.showingBefore, viewMask(ed), base)
+    }
+
+    private suspend fun renderDetails(e: Engine) {
+        detailRequests.filterNotNull().collect { req ->
+            val ed = editor?.takeIf { it.photoId == req.photo && it.image === req.base } ?: return@collect
+            val w = req.window
+            val image = withContext(e.viewRenders) {
+                runCatching {
+                    e.session.renderViewWindow(
+                        req.photo, req.frame.width.toUInt(), req.frame.height.toUInt(),
+                        w.left.toUInt(), w.top.toUInt(), w.width.toUInt(), w.height.toUInt(), req.before, req.mask,
+                    )?.toImageBitmap()
+                }.getOrNull()
+            }
+            // (a failed or refused window leaves the whole photo, magnified: never a blank view)
+            if (editor === ed && ed.image === req.base && detailRequests.value === req) {
+                ed.detail = image?.let { ViewDetail(it, req.frame, IntRect(w.left, w.top, w.left + it.width, w.top + it.height), req.base) }
+            }
+        }
     }
 
     private suspend fun renderViews(e: Engine) {
@@ -1920,6 +1994,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 result
                     .onSuccess { (histogram, bitmap) ->
                         ed.image = bitmap
+                        // zoomed in, the part on screen again, of this render (a draft's comes with the next)
+                        if (!req.draft) requestDetail()
                         ed.histogram = histogram
                         ed.rendered = true
                         ed.showingCropView = req.crop

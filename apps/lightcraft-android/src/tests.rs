@@ -616,3 +616,36 @@ fn folders_come_with_their_albums() {
     let rome = o.albums.iter().find(|x| x.id == album).unwrap();
     assert!(!rome.folder && rome.parent == Some(folder));
 }
+
+/// A zoomed view renders only the window on screen: it is that part of the view rendered whole at
+/// the frame's size, and costs the window's pixels whatever the zoom.
+#[test]
+fn a_view_window_is_that_part_of_the_whole_frame() {
+    let s = MobileSession::demo();
+    let id = first_photo(&s);
+    s.open_photo(id).unwrap();
+    let whole = s.render_view(id, 900, 900, false, false, None).unwrap();
+    let (w, h) = (whole.width, whole.height);
+    let (x, y, ww, wh) = (w / 3, h / 4, 160, 120);
+    let win = s.render_view_window(id, w, h, x, y, ww, wh, false, None).unwrap().expect("no spots: never refused");
+    assert_eq!((win.width, win.height), (ww, wh));
+    let mut diff = 0u64;
+    for j in 0..wh {
+        for i in 0..ww {
+            let a = (((y + j) * w + x + i) * 4) as usize;
+            let b = ((j * ww + i) * 4) as usize;
+            for c in 0..3 {
+                diff += u64::from(whole.rgba[a + c].abs_diff(win.rgba[b + c]));
+            }
+        }
+    }
+    let mean = diff as f64 / f64::from(ww * wh * 3);
+    assert!(mean < 3.0, "the window matches the whole render there (mean difference {mean:.2})");
+    // zoomed far in, the window is still only what was asked for
+    let deep = s.render_view_window(id, w * 6, h * 6, w * 3, h * 3, 1080, 1500, false, None).unwrap().unwrap();
+    assert_eq!((deep.width, deep.height), (1080, 1500));
+    // a window past the frame's edge is cut to the frame
+    let edge = s.render_view_window(id, w, h, w - 50, h - 40, 400, 400, false, None).unwrap().unwrap();
+    assert_eq!((edge.width, edge.height), (50, 40));
+    assert!(matches!(s.render_view_window(u64::MAX, w, h, 0, 0, 10, 10, false, None), Err(MobileError::NoPhoto(_))));
+}

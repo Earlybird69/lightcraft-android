@@ -111,6 +111,7 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -147,6 +148,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
@@ -1255,10 +1257,10 @@ private fun PhotoView(vm: AppViewModel, ed: EditorState, modifier: Modifier, sid
             panAnim.animateTo(Offset.Zero, tween(250, easing = AccelerateDecelerate))
         }
     }
-    // once a zoom settles, render the view at the new size
-    LaunchedEffect(ed.photoId, zoom) {
+    // once a zoom or a move settles, the part on screen is rendered sharp
+    LaunchedEffect(ed.photoId, zoom, offset) {
         delay(250)
-        vm.onZoom(zoom)
+        vm.onViewMoved(zoom, offset)
     }
     // the neighbours a swipe brings in, shown from their thumbnails until they're open
     val next = remember(ed.photoId, vm.photos) { vm.neighbourInfo(1) }
@@ -1283,7 +1285,7 @@ private fun PhotoView(vm: AppViewModel, ed: EditorState, modifier: Modifier, sid
                         val ev = awaitPointerEvent(PointerEventPass.Initial)
                         if (ev.changes.count { it.pressed } >= 2) {
                             val z0 = zoomAnim.value
-                            val z1 = (z0 * ev.calculateZoom()).coerceIn(1f, MAX_ZOOM)
+                            val z1 = (z0 * ev.calculateZoom()).coerceIn(1f, maxZoom(size, ed.image, ed.info.width.toInt()))
                             val k = z1 / z0
                             val c = ev.calculateCentroid(useCurrent = true) - Offset(size.width / 2f, size.height / 2f)
                             val o = clamp(c * (1f - k) + panAnim.value * k + ev.calculatePan(), z1)
@@ -1299,7 +1301,7 @@ private fun PhotoView(vm: AppViewModel, ed: EditorState, modifier: Modifier, sid
             .pointerInput(ed.photoId, cropping, swipeable, freeScroll) {
                 if (cropping) return@pointerInput
                 // the furthest a zoomed photo may move, and where a zoom keeps the point under the fingers
-                fun bounds(z: Float) = if (freeScroll) freeBounds(size, ed.image, z) else Offset(size.width * (z - 1f) / 2f, size.height * (z - 1f) / 2f)
+                fun bounds(z: Float) = if (freeScroll) freeBounds(size, ed.image, z) else zoomBounds(size, ed.image?.let { IntSize(it.width, it.height) }, z)
                 fun clamp(o: Offset, z: Float): Offset {
                     val b = bounds(z)
                     return Offset(o.x.coerceIn(-b.x, b.x), o.y.coerceIn(-b.y, b.y))
@@ -1367,7 +1369,7 @@ private fun PhotoView(vm: AppViewModel, ed: EditorState, modifier: Modifier, sid
                         val z0 = zoomAnim.value
                         val o0 = panAnim.value
                         val fit = image?.let { min(size.width / it.width.toFloat(), size.height / it.height.toFloat()) * it.width } ?: size.width.toFloat()
-                        val full = (ed.info.width.toFloat() / fit.coerceAtLeast(1f)).coerceIn(1.5f, MAX_ZOOM)
+                        val full = (ed.info.width.toFloat() / fit.coerceAtLeast(1f)).coerceIn(1.5f, maxZoom(size, image, ed.info.width.toInt()))
                         val z1 = if (z0 > 1.01f) 1f else full
                         val o1 = if (z1 <= 1f) Offset.Zero else about(up, z0, z1, o0)
                         scope.launch { zoomAnim.animateTo(z1, tween(400, easing = AccelerateDecelerate)) }
@@ -1380,13 +1382,16 @@ private fun PhotoView(vm: AppViewModel, ed: EditorState, modifier: Modifier, sid
                         val ev = awaitPointerEvent()
                         val fingers = ev.changes.count { it.pressed }
                         ev.changes.firstOrNull { it.id == down.id }?.let { tracker.addPosition(it.uptimeMillis, it.position) }
-                        if (freeScroll && fingers >= 2) {
+                        if (fingers == 0) {
+                            // the last finger lifted: nothing to move (with no finger down there's no
+                            // centroid, and a move about it would leave the photo nowhere: a black view)
+                        } else if (freeScroll && fingers >= 2) {
                             // the free scroll's own handler has it
                             pinched = true
                         } else if (fingers >= 2 || zoomAnim.value > 1f) {
                             pinched = pinched || fingers >= 2
                             val z0 = zoomAnim.value
-                            val z1 = (z0 * ev.calculateZoom()).coerceIn(1f, MAX_ZOOM)
+                            val z1 = (z0 * ev.calculateZoom()).coerceIn(1f, maxZoom(size, ed.image, ed.info.width.toInt()))
                             // the pinch keeps what's between the fingers under them, the pan moves it along
                             val o = if (z1 <= 1f) Offset.Zero else clamp(about(ev.calculateCentroid(useCurrent = true), z0, z1, panAnim.value) + ev.calculatePan(), z1)
                             scope.launch {
@@ -1445,6 +1450,30 @@ private fun PhotoView(vm: AppViewModel, ed: EditorState, modifier: Modifier, sid
                     translationY = offset.y
                 },
             )
+            // zoomed in, the part on screen rendered sharp, over the photo it was cut from
+            val detail = ed.detail?.takeIf { it.base === image && zoom > 1f }
+            if (detail != null) {
+                Canvas(
+                    Modifier.fillMaxSize().graphicsLayer {
+                        scaleX = zoom
+                        scaleY = zoom
+                        translationX = offset.x + swipe
+                        translationY = offset.y
+                    },
+                ) {
+                    // where the photo is drawn fitted (as the Image above places it), then the window on it
+                    val fit = min(size.width / image.width, size.height / image.height)
+                    val w = (image.width * fit).roundToInt()
+                    val h = (image.height * fit).roundToInt()
+                    val s = w / detail.frame.width.toFloat()
+                    withTransform({
+                        translate(((size.width - w) / 2f).roundToInt() + detail.window.left * s, ((size.height - h) / 2f).roundToInt() + detail.window.top * s)
+                        scale(s, s, Offset.Zero)
+                    }) {
+                        drawImage(detail.image, dstSize = IntSize(detail.image.width, detail.image.height), filterQuality = FilterQuality.High)
+                    }
+                }
+            }
             // the neighbour being swiped in
             val incoming = if (swipe < 0) nextLook else if (swipe > 0) previousLook else null
             if (incoming != null) {
@@ -1522,8 +1551,61 @@ private fun PhotoView(vm: AppViewModel, ed: EditorState, modifier: Modifier, sid
     }
 }
 
-/** How far in a pinch or a double-tap may take the photo. */
-private const val MAX_ZOOM = 8f
+/**
+ * How far in a pinch or a double-tap may take the photo, as the reference: to twice its own pixels
+ * (a photo [photoWidth] pixels across, its render [image] fitted to [view]), and at least twice its
+ * fitted size.
+ */
+private fun maxZoom(view: IntSize, image: ImageBitmap?, photoWidth: Int): Float {
+    val drawn = if (image == null || image.width <= 0 || image.height <= 0) view.width.toFloat() else min(view.width / image.width.toFloat(), view.height / image.height.toFloat()) * image.width
+    return max(2f, 2f * photoWidth / drawn.coerceAtLeast(1f))
+}
+
+/**
+ * The part of a zoomed view to render sharp over the whole-photo render [image] (fitted to [view]),
+ * at [zoom] about the view's centre, moved by [pan]: the zoomed frame's size (the photo drawn [zoom]
+ * times its fitted size, never past its own [photoWidth] pixels across nor [maxEdge] pixels along
+ * its long edge) and the window of that frame on screen, in its pixels, with a margin so a small
+ * move stays sharp. Null: nothing to add (not zoomed past what [image] holds, or none of the photo
+ * on screen).
+ */
+internal fun detailWindow(view: IntSize, image: IntSize, photoWidth: Int, maxEdge: Int, zoom: Float, pan: Offset): Pair<IntSize, IntRect>? {
+    if (view.width <= 0 || view.height <= 0 || image.width <= 0 || image.height <= 0 || !zoom.isFinite() || zoom <= 0f) return null
+    val fit = min(view.width / image.width.toFloat(), view.height / image.height.toFloat())
+    val dw = image.width * fit
+    val dh = image.height * fit
+    // the frame's scale over the fitted photo: the zoom, but past 100 % (or the phone's limit) the
+    // window is magnified
+    val k = min(min(zoom, max(photoWidth / dw, 1f)), maxEdge / max(dw, dh))
+    if (dw * k <= image.width * 1.1f) return null
+    val frame = IntSize((dw * k).roundToInt(), (dh * k).roundToInt())
+    val s = frame.width / dw
+    // the view's corners on the unzoomed view, then in the frame's pixels
+    val c = Offset(view.width / 2f, view.height / 2f)
+    val tl = (Offset.Zero - c - pan) / zoom + c
+    val br = (Offset(view.width.toFloat(), view.height.toFloat()) - c - pan) / zoom + c
+    val left = (view.width - dw) / 2f
+    val top = (view.height - dh) / 2f
+    val margin = 32f
+    val x0 = ((tl.x - left) * s - margin).toInt().coerceIn(0, frame.width)
+    val y0 = ((tl.y - top) * s - margin).toInt().coerceIn(0, frame.height)
+    val x1 = ceil((br.x - left) * s + margin).toInt().coerceIn(0, frame.width)
+    val y1 = ceil((br.y - top) * s + margin).toInt().coerceIn(0, frame.height)
+    if (x1 <= x0 || y1 <= y0) return null
+    return frame to IntRect(x0, y0, x1, y1)
+}
+
+/**
+ * How far a zoomed photo may move, either way from the middle, at zoom [z] in a view of [view]: as
+ * far as keeps its edges at the view's (the reference's), and not at all along a side where it is
+ * smaller than the view (there it stays centred).
+ */
+internal fun zoomBounds(view: IntSize, image: IntSize?, z: Float): Offset {
+    val fit = if (image == null || image.width <= 0 || image.height <= 0) 1f else min(view.width / image.width.toFloat(), view.height / image.height.toFloat())
+    val w = (image?.width ?: view.width) * fit
+    val h = (image?.height ?: view.height) * fit
+    return Offset(max(0f, (w * z - view.width) / 2f), max(0f, (h * z - view.height) / 2f))
+}
 
 /**
  * How far the photo may move in free scroll (Masking, Remove), either way from the middle, at zoom

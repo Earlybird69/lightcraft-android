@@ -106,6 +106,44 @@ class LayoutLogicTest {
         assertNull(photoPoint(Offset(1f, 1f), IntSize(100, 100), 3000, 2000, 0f, Offset.Zero))
     }
 
+    @Test
+    fun aZoomedPhotoMovesOnlyAsFarAsItsEdges() {
+        // a wide photo (1000 × 667 fitted) in a tall view: at 2× it is 2000 × 1334, wider than the
+        // view by 1000 (500 either way) but still shorter than it, so it can't move up or down
+        assertEquals(Offset(500f, 0f), zoomBounds(IntSize(1000, 2000), IntSize(1000, 667), 2f))
+        // at 4× it is 2668 tall: 334 either way
+        val b = zoomBounds(IntSize(1000, 2000), IntSize(1000, 667), 4f)
+        assertEquals(1500f, b.x, 1e-3f)
+        assertEquals(334f, b.y, 1e-3f)
+        assertEquals(Offset.Zero, zoomBounds(IntSize(1000, 2000), IntSize(1000, 667), 1f))
+    }
+
+    @Test
+    fun aZoomedViewRendersOnlyWhatIsOnScreen() {
+        // a 6000 × 4000 photo fitted to a 1000 × 2000 view (its render 1000 × 667)
+        val view = IntSize(1000, 2000)
+        val image = IntSize(1000, 667)
+        assertNull("at fit the whole-photo render is enough", detailWindow(view, image, 6000, Int.MAX_VALUE, 1f, Offset.Zero))
+        // 4× in about the middle: the frame is the photo at 4000 px across, and the window the
+        // middle quarter of it, about the view's size
+        val (frame, window) = detailWindow(view, image, 6000, Int.MAX_VALUE, 4f, Offset.Zero)!!
+        assertEquals(IntSize(4000, 2668), frame)
+        assertEquals(2000, (window.left + window.right) / 2)
+        assertEquals(1468, window.left)
+        assertEquals(302, window.top)
+        // past the photo's own pixels the frame stops growing, and the window shrinks with the zoom
+        val (deepFrame, deepWindow) = detailWindow(view, image, 6000, Int.MAX_VALUE, 12f, Offset.Zero)!!
+        assertEquals(6000, deepFrame.width)
+        assert(deepWindow.width <= 1000 * 6 / 12 + 64)
+        // a phone short of memory stays within the 2560 px preview, magnified past it
+        val (smallFrame, smallWindow) = detailWindow(view, image, 6000, 2560, 4f, Offset.Zero)!!
+        assertEquals(IntSize(2560, 1708), smallFrame)
+        assert(smallWindow.width <= 1000 * 2560 / 4000 + 64)
+        // moved off the photo (free scroll), there's nothing to render
+        assertNull(detailWindow(view, image, 6000, Int.MAX_VALUE, 4f, Offset(100_000f, 0f)))
+        assertNull(detailWindow(IntSize(0, 0), image, 6000, Int.MAX_VALUE, 4f, Offset.Zero))
+    }
+
     private fun assertPoint(expected: Pair<Double, Double>, actual: Pair<Double, Double>) {
         assertEquals(expected.first, actual.first, 1e-9)
         assertEquals(expected.second, actual.second, 1e-9)

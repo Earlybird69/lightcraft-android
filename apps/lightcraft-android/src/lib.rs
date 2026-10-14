@@ -1025,23 +1025,47 @@ impl MobileSession {
         }
         .ok_or(MobileError::NoPhoto(id))?
         .with_stages(self.stages_for(photo, before));
-        // the mask being edited, shown over the photo as the masking options ask
-        let job = match mask_overlay.and_then(|m| u16::try_from(m.id).ok().map(|id| (id, m))) {
-            Some((id, m)) => {
-                let [_, r, g, b] = m.color.to_be_bytes();
-                job.with_overlay(lightcraft_engine::pipeline::Overlay::Mask {
-                    id,
-                    view: lightcraft_engine::pipeline::MaskView::parse(&m.view).unwrap_or_default(),
-                    color: [r, g, b],
-                    opacity: m.opacity.min(100),
-                })
-            }
-            None => job,
-        };
+        let job = with_mask_overlay(job, mask_overlay);
         let job = if draft { job.draft() } else { job };
         let r = job.run();
         self.lock().accept(&r);
         Ok(rendered_image(id, r.rendered.map_err(MobileError::Render)?, draft))
+    }
+
+    /// One window of the editor's view zoomed in: the view as it would look rendered whole at
+    /// `frame_width × frame_height` (the photo, cropped, fitting that size), of which only the
+    /// `width × height` pixels at `x, y` are rendered, so a zoomed view costs what the screen shows
+    /// whatever the zoom. `before` and `mask_overlay` as in [`Self::render_view`]. `None`: what the
+    /// window reads (a spot's source, an Auto Mask stroke) is too far from it for one render, so the
+    /// whole-frame view has to do. Nothing is cached. Blocks.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_view_window(
+        &self,
+        id: u64,
+        frame_width: u32,
+        frame_height: u32,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        before: bool,
+        mask_overlay: Option<MaskOverlay>,
+    ) -> Result<Option<RenderedImage>, MobileError> {
+        let photo = PhotoId(id);
+        let (fw, fh) = (frame_width.max(1) as usize, frame_height.max(1) as usize);
+        let window = lightcraft_engine::pipeline::PixelWindow { x: x as usize, y: y as usize, w: width.max(1) as usize, h: height.max(1) as usize }
+            .clamped(fw, fh);
+        let job = {
+            let mut s = self.lock();
+            if s.catalog.photo(photo).is_none() {
+                return Err(MobileError::NoPhoto(id));
+            }
+            if before { s.region_job_before(photo, fw, fh, window, true) } else { s.region_job(photo, fw, fh, window, true) }
+        };
+        let Some(job) = job else { return Ok(None) };
+        let r = with_mask_overlay(job, mask_overlay).run();
+        self.lock().accept(&r);
+        Ok(Some(rendered_image(id, r.rendered.map_err(MobileError::Render)?, false)))
     }
 
     /// Mask `mask` of photo `id` as Masking's column pictures it: what it selects, white on black,
@@ -1377,6 +1401,23 @@ fn photo_info(p: &Photo) -> PhotoInfo {
 fn shown_aspect(p: &Photo) -> f64 {
     let (w, h) = export::output_size(p, &export::ExportOptions::default());
     if w == 0 || h == 0 { 1.0 } else { w as f64 / h as f64 }
+}
+
+/// `job` with mask `overlay` drawn over the photo as the masking options ask (the Masking tool's
+/// overlay of the mask being edited).
+fn with_mask_overlay(job: RenderJob, overlay: Option<MaskOverlay>) -> RenderJob {
+    match overlay.and_then(|m| u16::try_from(m.id).ok().map(|id| (id, m))) {
+        Some((id, m)) => {
+            let [_, r, g, b] = m.color.to_be_bytes();
+            job.with_overlay(lightcraft_engine::pipeline::Overlay::Mask {
+                id,
+                view: lightcraft_engine::pipeline::MaskView::parse(&m.view).unwrap_or_default(),
+                color: [r, g, b],
+                opacity: m.opacity.min(100),
+            })
+        }
+        None => job,
+    }
 }
 
 fn rendered_image(photo: u64, r: Rendered, draft: bool) -> RenderedImage {
