@@ -5,7 +5,7 @@
 <h1 align="center">LightCraft for Android</h1>
 
 <p align="center">
-  <b>LightCraft-android is an open-source reimplementation of the Adobe Lightroom Android app, created using the same Rust engine, <a href="https://github.com/storytold/lightcraft">LightCraft</a>, as the desktop app, and built with a Kotlin/Jetpack Compose UI framework.</b><br>
+  <b>An Android native open-source, non-destructive photo editor and raw developer written in Rust, built on the same engine as the desktop app, <a href="https://github.com/storytold/lightcraft">LightCraft</a>, with a Kotlin/Jetpack Compose UI.</b><br>
   Many credits to the original maintainers, <a href="https://github.com/storytold">storytold</a>.
 </p>
 
