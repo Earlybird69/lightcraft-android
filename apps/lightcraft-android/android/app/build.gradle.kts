@@ -86,7 +86,7 @@ abstract class CargoNdkBuild : DefaultTask() {
             environment("CARGO_ENCODED_RUSTFLAGS", remap.joinToString("\u001f"))
             commandLine(
                 listOf(cargo.get(), "ndk") + targets +
-                    listOf("--platform", apiLevel.get().toString(), "-o", out, "build", "--release", "-p", "lightcraft-android", "--lib"),
+                    listOf("--platform", apiLevel.get().toString(), "-o", out, "build", "--release", "--locked", "-p", "lightcraft-android", "--lib"),
             )
         }
     }
@@ -108,7 +108,7 @@ abstract class UniffiBindgen : DefaultTask() {
         execOperations.exec {
             workingDir(workspaceDir.get())
             commandLine(
-                cargo.get(), "run", "--quiet", "-p", "lightcraft-android-bindgen", "--",
+                cargo.get(), "run", "--quiet", "--locked", "-p", "lightcraft-android-bindgen", "--",
                 "generate", library.get().asFile.absolutePath, "--language", "kotlin", "--out-dir", out.absolutePath, "--no-format",
             )
         }
