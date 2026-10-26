@@ -13,7 +13,7 @@ import androidx.compose.runtime.remember
 
 /** The library grid, or the editor when a photo is open; snackbars for both. */
 @Composable
-fun LightcraftRoot(vm: AppViewModel, onPickPhotos: () -> Unit, onPickFiles: () -> Unit, onCamera: () -> Unit) {
+fun LightcraftRoot(vm: AppViewModel, onPickPhotos: () -> Unit, onPickFiles: () -> Unit, onCamera: () -> Unit, onImportFolder: () -> Unit) {
     val snackbar = remember { SnackbarHostState() }
     // kept here so the grid's scroll position survives a visit to the editor
     val grid = rememberLazyListState()
@@ -35,10 +35,16 @@ fun LightcraftRoot(vm: AppViewModel, onPickPhotos: () -> Unit, onPickFiles: () -
     val last = remember { arrayOfNulls<EditorState>(1) }
     if (editor != null) last[0] = editor
     BackHandler(enabled = editor != null) { vm.back() }
+    // Back from the library grid goes to the Jobs screen (the grid's own Backs, composed later, come first)
+    BackHandler(enabled = editor == null && !vm.jobsHome && !vm.selecting) { vm.showJobs() }
     Box {
         Crossfade(targetState = editor != null, label = "screen") { editing ->
             val ed = if (editing) vm.editor ?: last[0] else null
-            if (ed == null) LibraryScreen(vm, snackbar, grid, onPickPhotos, onPickFiles, onCamera) else EditorScreen(vm, ed, snackbar)
+            when {
+                ed != null -> EditorScreen(vm, ed, snackbar)
+                vm.jobsHome -> JobsScreen(vm, snackbar, onImportFolder)
+                else -> LibraryScreen(vm, snackbar, grid, onPickPhotos, onPickFiles, onCamera)
+            }
         }
         if (vm.slideshow != null) Slideshow(vm)
     }

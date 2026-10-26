@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
@@ -34,6 +35,43 @@ object PhotoFiles {
         }
     }
 
+    private val rawExtensions = setOf("arw", "dng", "cr2", "cr3", "nef", "nrw", "raf", "orf", "rw2", "pef", "srw", "x3f", "3fr", "iiq")
+
+    /** A folder picked for import: its name and the photos in it (its subfolders' too), by name. */
+    class PickedFolder(val name: String, val photos: List<Uri>)
+
+    /**
+     * The photos in the folder [tree] (from the system's folder picker) and its subfolders:
+     * images, and raws the picker may not type as images. Read once; nothing is kept.
+     */
+    fun listFolder(context: Context, tree: Uri): PickedFolder {
+        val resolver = context.contentResolver
+        val rootId = DocumentsContract.getTreeDocumentId(tree)
+        val rootName = resolver.query(DocumentsContract.buildDocumentUriUsingTree(tree, rootId), arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)
+            ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+            ?: rootId.substringAfterLast('/').substringAfterLast(':')
+        val found = ArrayList<Pair<String, Uri>>()
+        val pending = ArrayDeque(listOf(rootId))
+        val columns = arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE)
+        while (pending.isNotEmpty()) {
+            val parent = pending.removeFirst()
+            resolver.query(DocumentsContract.buildChildDocumentsUriUsingTree(tree, parent), columns, null, null, null)?.use { c ->
+                while (c.moveToNext()) {
+                    val id = c.getString(0) ?: continue
+                    val name = c.getString(1).orEmpty()
+                    val mime = c.getString(2).orEmpty()
+                    when {
+                        mime == DocumentsContract.Document.MIME_TYPE_DIR -> pending.addLast(id)
+                        name.startsWith(".") -> Unit
+                        mime.startsWith("image/") || name.substringAfterLast('.', "").lowercase() in rawExtensions ->
+                            found += name to DocumentsContract.buildDocumentUriUsingTree(tree, id)
+                    }
+                }
+            }
+        }
+        return PickedFolder(rootName, found.sortedBy { it.first.lowercase() }.map { it.second })
+    }
+
     /** The document's name, with an extension (the engine tells formats apart by both). */
     private fun fileName(context: Context, uri: Uri): String {
         val shown = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
@@ -59,13 +97,19 @@ object PhotoFiles {
         return file
     }
 
-    /** Save an export into Pictures/LightCraft (the system picks another name if it is taken). */
-    fun saveToPictures(context: Context, file: ExportedFile): Uri {
+    /** A job's name as a folder name: no path separators or characters storage refuses. */
+    fun folderName(name: String): String = name.replace(unsafeChars, "_").trim().trim('.').ifEmpty { "Untitled job" }
+
+    /**
+     * Save an export into Pictures/[folder] (the system picks another name if it is taken);
+     * [folder] may hold subfolders ("LISTD/12 Smith St").
+     */
+    fun saveToPictures(context: Context, file: ExportedFile, folder: String = "LightCraft"): Uri {
         val resolver = context.contentResolver
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, file.fileName)
             put(MediaStore.Images.Media.MIME_TYPE, file.mimeType)
-            put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/LightCraft")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/$folder")
             put(MediaStore.Images.Media.IS_PENDING, 1)
         }
         val collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)

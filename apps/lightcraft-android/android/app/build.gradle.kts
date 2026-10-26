@@ -142,15 +142,28 @@ android {
     ndkVersion = "29.0.14206865"
 
     defaultConfig {
-        applicationId = "io.github.artcraftandroid.lightcraft"
+        // LISTD build: its own app id, so it installs beside the official LightCraft with its own library
+        applicationId = "io.github.artcraftandroid.lightcraft.listd"
         minSdk = minApi
         targetSdk = 36
-        versionCode = appVersionCode
+        // each GitHub build counts up (listd.build: the run number), so a new APK installs over the last
+        versionCode = appVersionCode * 1000 + (providers.gradleProperty("listd.build").orNull?.toIntOrNull() ?: 0)
         versionName = appVersion
         ndk { abiFilters.addAll(rustAbis) }
     }
 
     signingConfigs {
+        // LISTD build: one fixed key (from the repository's secrets, never in the code), so every build
+        // installs over the last; without it the build is signed with the debug key
+        providers.environmentVariable("LISTD_KEYSTORE").orNull?.let { path ->
+            create("listd") {
+                storeFile = file(path)
+                storeType = "PKCS12"
+                storePassword = providers.environmentVariable("LISTD_KEYSTORE_PASSWORD").orNull
+                keyAlias = "listd"
+                keyPassword = providers.environmentVariable("LISTD_KEYSTORE_PASSWORD").orNull
+            }
+        }
         if (releaseKeystore != null) {
             create("release") {
                 storeFile = file(releaseKeystore)
@@ -169,7 +182,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = if (unsignedRelease) null else signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            signingConfig = if (unsignedRelease) null else signingConfigs.findByName("release") ?: signingConfigs.findByName("listd") ?: signingConfigs.getByName("debug")
             // reproducible builds: no record of the checkout in the APK
             vcsInfo { include = false }
         }

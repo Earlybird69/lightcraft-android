@@ -1,0 +1,88 @@
+# LISTD build: every push to the `listd` branch (or Actions › LISTD build › Run workflow) builds
+# the 64-bit ARM APK (Galaxy Z Fold and most current phones) and publishes it as the
+# `listd-latest` release, so the newest APK is always one tap away on the phone:
+#   https://github.com/<you>/lightcraft-android/releases/tag/listd-latest
+name: LISTD build
+
+on:
+  push:
+    branches: [listd]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: listd-build
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  apk:
+    name: APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Rust
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: listd-android
+
+      - name: Install cargo-ndk and the Android NDK
+        run: |
+          cargo install cargo-ndk --version 4.1.2 --locked
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;29.0.14206865" >/dev/null
+
+      # the signing key lives in the repository's secrets (Settings › Secrets and variables › Actions)
+      - name: Signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.LISTD_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.LISTD_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d >"$RUNNER_TEMP/listd.p12"
+            echo "LISTD_KEYSTORE=$RUNNER_TEMP/listd.p12" >>"$GITHUB_ENV"
+            echo "LISTD_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >>"$GITHUB_ENV"
+          else
+            echo "::warning::No LISTD_KEYSTORE_BASE64 secret: signed with a throwaway debug key, so this APK won't install over the last one"
+          fi
+
+      - name: Build
+        working-directory: apps/lightcraft-android/android
+        run: |
+          ./gradlew assembleRelease -Plightcraft.abis=arm64-v8a "-Plistd.build=$GITHUB_RUN_NUMBER" --no-daemon
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/dist/LightCraft-LISTD.apk"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: LightCraft-LISTD-apk
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish as listd-latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release delete listd-latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create listd-latest dist/LightCraft-LISTD.apk \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "LightCraft LISTD (build $GITHUB_RUN_NUMBER)" \
+            --notes "Latest LISTD build from \`${GITHUB_SHA::9}\`. On the phone: tap LightCraft-LISTD.apk below, then Install."
+          echo "APK: https://github.com/$GITHUB_REPOSITORY/releases/tag/listd-latest" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Remove the signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/listd.p12"

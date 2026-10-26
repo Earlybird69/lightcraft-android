@@ -999,7 +999,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Something to tell the person, from outside the view model (the camera couldn't open, say). */
     fun tell(text: String) = say(text)
 
-    private fun importFiles(album: ULong? = null, duplicates: Boolean = false, stage: (Engine) -> List<File>) {
+    private fun importFiles(album: ULong? = null, duplicates: Boolean = false, after: (() -> Unit)? = null, stage: (Engine) -> List<File>) {
         viewModelScope.launch {
             val e = lightcraft.engine.await().getOrNull() ?: return@launch
             importing = true
@@ -1029,7 +1029,112 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             result.onSuccess { r ->
                 val name = album?.let { id -> overview?.albums?.firstOrNull { it.id == id }?.name }
                 say(importSummary(r) + (name?.let { " into $it" } ?: ""))
+                after?.invoke()
             }.onFailure { say("Import failed: ${it.message}") }
+        }
+    }
+
+    // ------------------------------------------------------------------ jobs (LISTD)
+
+    /** The Jobs screen is on show (the app opens to it); false: the library grid. */
+    var jobsHome by mutableStateOf(true)
+        private set
+
+    /** Jobs are the library's plain albums, newest first. */
+    val jobs: List<AlbumInfo>
+        get() = overview?.albums.orEmpty().filter { !it.smart && !it.folder }.sortedByDescending { it.id }
+
+    /** Open job [id] (named [name]): its photos in the grid. */
+    fun openJob(id: ULong, name: String) {
+        if (searching || filter.text.isNotBlank()) {
+            searching = false
+            filter = filter.copy(text = "")
+        }
+        if (homeTab != "library") showHomeTab("library")
+        jobsHome = false
+        showView(LibraryView.album(id, name))
+    }
+
+    /** Every photo in the library (the Jobs screen's All photos). */
+    fun openAllPhotos() {
+        if (homeTab != "library") showHomeTab("library")
+        jobsHome = false
+        showView(LibraryView.ALL)
+    }
+
+    /** Back to the Jobs screen. */
+    fun showJobs() {
+        endSelecting()
+        jobsHome = true
+        viewModelScope.launch { refreshPhotos() }
+    }
+
+    /**
+     * Import every photo in the folder [tree] (the system's folder picker) into a job named after
+     * the folder, made if it isn't there yet, then open it. Photos the library has already are
+     * added to the job, not imported twice.
+     */
+    fun importFolder(tree: Uri) {
+        if (importing) return
+        viewModelScope.launch {
+            val e = lightcraft.engine.await().getOrNull() ?: return@launch
+            importing = true
+            val picked = withContext(Dispatchers.IO) { runCatching { PhotoFiles.listFolder(getApplication(), tree) } }
+            importing = false
+            val folder = picked.getOrElse {
+                say("That folder couldn't be read: ${it.message}")
+                return@launch
+            }
+            if (folder.photos.isEmpty()) {
+                say("There are no photos in ${folder.name}")
+                return@launch
+            }
+            val existing = jobs.firstOrNull { it.name.equals(folder.name, ignoreCase = true) }
+            val id = existing?.id ?: runCatching {
+                JSONObject(e.command { execute("album.create", JSONObject().put("name", folder.name).toString()) }).optLong("id", -1L)
+            }.getOrDefault(-1L).takeIf { it >= 0 }?.toULong()
+            if (id == null) {
+                say("The job “${folder.name}” couldn't be made")
+                return@launch
+            }
+            val name = existing?.name ?: folder.name
+            importFiles(id, after = { openJob(id, name) }) { PhotoFiles.stage(getApplication(), folder.photos, it.stagingDir) }
+        }
+    }
+
+    /** Saving to the phone: photos done and how many in all (null: not saving). */
+    var saving by mutableStateOf<Pair<Int, Int>?>(null)
+        private set
+
+    /** Where a save goes: Pictures/LISTD/<the job on show>, or Pictures/LISTD outside a job. */
+    val saveFolder: String
+        get() = if (view.kind == "album") "LISTD/${PhotoFiles.folderName(view.name)}" else "LISTD"
+
+    /** Select mode's Save: the selected photos, exported as the last export was, into the job's folder. */
+    fun saveSelected() = savePhotos(selected.toList())
+
+    /** The whole job on show (every photo in the grid). */
+    fun saveJob() = savePhotos(photos.map { it.id })
+
+    private fun savePhotos(ids: List<ULong>) {
+        val e = engine ?: return
+        if (ids.isEmpty() || saving != null) return
+        val folder = saveFolder
+        val options = exportChoice.json()
+        saving = 0 to ids.size
+        viewModelScope.launch {
+            val app = getApplication<Application>()
+            var saved = 0
+            var failed = 0
+            for (id in ids) {
+                val ok = withContext(Dispatchers.IO) { runCatching { PhotoFiles.saveToPictures(app, e.session.export(id, options), folder) }.isSuccess }
+                if (ok) saved++ else failed++
+                saving = (saved + failed) to ids.size
+            }
+            saving = null
+            endSelecting()
+            val what = if (saved == 1) "1 photo" else "$saved photos"
+            say("Saved $what to Pictures/$folder" + if (failed > 0) " ($failed couldn't be saved)" else "")
         }
     }
 
@@ -3472,12 +3577,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         exportChoice = choice
         prefs.edit().putString("export", choice.prefs()).apply()
         val options = choice.json()
+        val folder = saveFolder
         viewModelScope.launch {
             val result = runCatching {
                 withContext(Dispatchers.IO) {
                     val file = e.session.export(ed.photoId, options)
                     val app = getApplication<Application>()
-                    (if (share) PhotoFiles.shareable(app, file) else PhotoFiles.saveToPictures(app, file)) to file
+                    (if (share) PhotoFiles.shareable(app, file) else PhotoFiles.saveToPictures(app, file, folder)) to file
                 }
             }
             ed.exporting = false
@@ -3486,7 +3592,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     if (share) {
                         PhotoFiles.share(getApplication(), uri, file.mimeType)
                     } else {
-                        say("Saved ${file.fileName} (${file.width}×${file.height}) to Pictures/LightCraft", "Share") {
+                        say("Saved ${file.fileName} (${file.width}×${file.height}) to Pictures/$folder", "Share") {
                             PhotoFiles.share(getApplication(), uri, file.mimeType)
                         }
                     }

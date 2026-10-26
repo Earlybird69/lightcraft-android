@@ -30,6 +30,9 @@ class MainActivity : ComponentActivity() {
     // raw files are often not in the photo picker: any document, the engine tells what it can read
     private val pickFiles = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { vm.importUris(it) }
 
+    // Import photos on the Jobs screen: a folder, which becomes a job
+    private val pickFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { tree -> tree?.let(vm::importFolder) }
+
     // a photo taken with the phone's camera app: written to a file of ours, then moved into the library
     private var shot: File? = null
     private val takePhoto = registerForActivityResult(ActivityResultContracts.TakePicture()) { taken ->
@@ -52,6 +55,13 @@ class MainActivity : ComponentActivity() {
                     onPickPhotos = { pickPhotos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                     onPickFiles = { pickFiles.launch(arrayOf("image/*", "application/octet-stream")) },
                     onCamera = ::openCamera,
+                    onImportFolder = {
+                        try {
+                            pickFolder.launch(null)
+                        } catch (e: ActivityNotFoundException) {
+                            vm.tell("There's no app to pick a folder with.")
+                        }
+                    },
                 )
             }
         }

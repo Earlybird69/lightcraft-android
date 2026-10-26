@@ -251,7 +251,7 @@ fun LibraryScreen(vm: AppViewModel, snackbar: SnackbarHostState, list: LazyListS
                         SelectBar(vm)
                     } else {
                         Column {
-                            LibraryTopBar(onMenu = { scope.launch { openDrawer(drawer) } }, onSearch = if (device) null else ({ searching = true }), onMore = { sheet = if (device) "deviceGrid" else "more" })
+                            LibraryTopBar(vm, onMenu = { scope.launch { openDrawer(drawer) } }, onSearch = if (device) null else ({ searching = true }), onMore = { sheet = if (device) "deviceGrid" else "more" })
                             // a sent search, as the reference shows it: its words in a chip over the results
                             if (query.isNotBlank()) SearchChips(query, onEdit = { searching = true }, onClear = closeSearch)
                         }
@@ -355,12 +355,14 @@ private suspend fun openDrawer(drawer: DrawerState) = drawer.animateTo(DrawerVal
 
 /** The status bar's strip, then the 56 dp bar: menu at left, search and more at right. */
 @Composable
-private fun LibraryTopBar(onMenu: () -> Unit, onSearch: (() -> Unit)?, onMore: () -> Unit) {
+private fun LibraryTopBar(vm: AppViewModel, onMenu: () -> Unit, onSearch: (() -> Unit)?, onMore: () -> Unit) {
     Column(Modifier.fillMaxWidth().background(Lc.bar)) {
         StatusStrip()
         Row(Modifier.fillMaxWidth().windowInsetsPadding(sides).height(56.dp), verticalAlignment = Alignment.CenterVertically) {
+            BarButton(MdIcon.ArrowBack, "Back to jobs", size = 48.dp, tint = Lc.text) { vm.showJobs() }
             BarButton(MdIcon.Menu, "Menu", size = 48.dp, tint = Lc.text, onClick = onMenu)
             Spacer(Modifier.weight(1f))
+            if (onSearch != null) SaveJobButton(vm)
             onSearch?.let { BarButton(MdIcon.Search, "Search", size = 48.dp, tint = Lc.text, onClick = it) }
             BarButton(MdIcon.MoreVert, if (onSearch == null) "Grid settings" else "More options", size = 48.dp, tint = Lc.text, onClick = onMore)
         }
@@ -554,6 +556,8 @@ private fun SelectActions(vm: AppViewModel, onSheet: (String) -> Unit, onDeviceD
             ActionButton(LcIcon.Undo, "Restore", any) { vm.restoreSelected() }
             ActionButton(LcIcon.Trash, "Delete", any) { vm.deleteSelectedPermanently() }
         } else {
+            val saving = vm.saving
+            ActionButton(LcIcon.Download, if (saving != null) "${saving.first}/${saving.second}" else "Save", any && saving == null) { vm.saveSelected() }
             ActionButton(LcIcon.Share, if (vm.sharingSelected) "Sharing…" else "Share", any && !vm.sharingSelected) { vm.shareSelected() }
             ActionButton(LcIcon.Photos, "Add to", any) { onSheet("album") }
             // in an album, as the reference's: asked whether out of the album or to Deleted; elsewhere, to Deleted
@@ -913,7 +917,9 @@ private fun WideHome(
                     if (vm.selecting) {
                         SelectBarRow(vm, Modifier.align(Alignment.Center))
                     } else {
-                        Row(Modifier.align(Alignment.CenterEnd).padding(end = 1.dp)) {
+                        Box(Modifier.align(Alignment.CenterStart)) { BarButton(MdIcon.ArrowBack, "Back to jobs", size = 48.dp, tint = Lc.text) { vm.showJobs() } }
+                        Row(Modifier.align(Alignment.CenterEnd).padding(end = 1.dp), verticalAlignment = Alignment.CenterVertically) {
+                            if (!device) SaveJobButton(vm)
                             // the Gallery tab has no search; its ⋮ is Grid Settings
                             if (!device) BarButton(MdIcon.Search, "Search", size = 48.dp, tint = Lc.text, onClick = onSearch)
                             Box(Modifier.anchor("more", anchors)) {
@@ -966,5 +972,23 @@ private fun WideHome(
                 }
             }
         }
+    }
+}
+
+/**
+ * In a job: Save job, every photo in it exported as the last export was into
+ * Pictures/LISTD/<job>; it counts up while saving.
+ */
+@Composable
+private fun SaveJobButton(vm: AppViewModel) {
+    if (vm.view.kind != "album" || vm.photos.isEmpty()) return
+    val saving = vm.saving
+    Row(
+        Modifier.clip(RoundedCornerShape(6.dp)).clickable(enabled = saving == null, role = Role.Button) { vm.saveJob() }.padding(horizontal = 10.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        LcIcon(LcIcon.Download, null, tint = Lc.selected, size = 20.dp)
+        Spacer(Modifier.width(6.dp))
+        Text(if (saving != null) "Saving ${saving.first}/${saving.second}" else "Save job", color = Lc.selected, fontFamily = Inter, fontSize = 15.sp)
     }
 }
