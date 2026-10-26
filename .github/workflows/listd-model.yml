@@ -1,0 +1,54 @@
+# LISTD model: converts the LaMa inpainting model (Apache-2.0) to ONNX and publishes it as the
+# `lama-model` release, which AI Remove downloads once on the phone. Run it from Actions › LISTD
+# model › Run workflow (it also runs when the converter changes).
+name: LISTD model
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [listd]
+    paths: ['tools/lama/**', '.github/workflows/listd-model.yml']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: listd-model
+  cancel-in-progress: false
+
+jobs:
+  model:
+    name: Convert and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install the converter's tools
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.14.1"
+          pip install "onnx==1.23.2" "onnxruntime==1.29.0" numpy
+
+      - name: Download big-lama
+        run: |
+          curl -fsSL -o big-lama.pt https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt
+          echo "e3aa4aaa15225a33ec84f9f4bc47e500  big-lama.pt" | md5sum -c -
+
+      - name: Convert and check against PyTorch
+        run: python3 tools/lama/export_lama.py big-lama.pt lama.onnx
+
+      - name: Publish as lama-model
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          sha256sum lama.onnx | cut -d' ' -f1 > lama.onnx.sha256
+          gh release delete lama-model --yes --cleanup-tag 2>/dev/null || true
+          gh release create lama-model lama.onnx lama.onnx.sha256 \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "AI Remove model (LaMa)" \
+            --notes "LaMa (Apache-2.0, https://github.com/advimman/lama) converted to ONNX for AI Remove. The app downloads it once; nothing to do here."
+          echo "Model: $(du -h lama.onnx | cut -f1), sha256 $(cat lama.onnx.sha256)" >>"$GITHUB_STEP_SUMMARY"

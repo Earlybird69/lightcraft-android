@@ -766,6 +766,7 @@ pub fn specs() -> Vec<CommandSpec> {
                         feather: base.feather,
                         opacity: 100.0,
                         source_offset: None,
+                        patch: None,
                     };
                     spot.source_offset = pick_source(s, id, &dd, &spot, None);
                     dd.spots.push(spot);
@@ -779,7 +780,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Remove Spot",
             [],
             None,
-            "{mode?: remove|heal|clone, points: [[x,y],…], size?: fraction of long edge, feather?, opacity?, source?: [dx,dy] (default: the best match nearby)} — selects the new spot; returns {index}",
+            "{mode?: remove|heal|clone|ai, points: [[x,y],…], size?: fraction of long edge, feather?, opacity?, source?: [dx,dy] (default: the best match nearby), patch? (ai: {file: RGB8 rows, width, height, gain, rect} from spot.aiInput's area, filled)} — selects the new spot; returns {index}",
             has_active,
             |s, p| {
                 let mode: SpotMode =
@@ -800,7 +801,14 @@ pub fn specs() -> Vec<CommandSpec> {
                     feather: f64_or(p, "feather", d.feather).clamp(0.0, 100.0),
                     opacity: f64_or(p, "opacity", d.opacity).clamp(0.0, 100.0),
                     source_offset: point(p, "source"),
+                    patch: None,
                 };
+                if mode == SpotMode::Ai {
+                    // the fill the frontend's model made from spot.aiInput: stored with the library
+                    let patch = p.get("patch").ok_or_else(|| bad("spot.add", "an ai spot needs its patch"))?;
+                    spot.patch = Some(store_patch(s, patch)?);
+                    spot.source_offset = Some(Point::new(0.0, 0.0));
+                }
                 let id = s.active().ok_or_else(|| bad("spot.add", "no active photo"))?;
                 let mut dd = (*s.develop_of(id).unwrap_or_default()).clone();
                 if spot.source_offset.is_none() {
@@ -812,6 +820,45 @@ pub fn specs() -> Vec<CommandSpec> {
                 s.set_develop(id, dd, "Remove")?;
                 s.active_spot = Some(n - 1);
                 Ok(json!({"index": n - 1}))
+            }
+        ),
+        cmd!(
+            "spot.aiInput",
+            "AI Remove Input",
+            [],
+            None,
+            "{points: [[x,y],…], size: fraction of long edge, maxEdge? (px, default 768), dir: folder to write to} — writes the area around the spot for an inpainting model: <dir>/ai-input.rgb (RGB8 rows) and <dir>/ai-mask.gray (8-bit, 255 = fill); returns {image, mask, width, height, gain, rect}. Changes nothing.",
+            has_active,
+            |s, p| {
+                let c = "spot.aiInput";
+                let pts: Vec<Point> = p
+                    .get("points")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(|q| Some(Point::new(q.get(0)?.as_f64()?, q.get(1)?.as_f64()?))).collect())
+                    .unwrap_or_default();
+                if pts.is_empty() {
+                    return Err(bad(c, "missing points"));
+                }
+                let size = f64_or(p, "size", Spot::default().size).clamp(SPOT_SIZE.0, SPOT_SIZE.1);
+                let max_edge = (f64_or(p, "maxEdge", 768.0) as usize).clamp(64, 2048);
+                let dir = std::path::PathBuf::from(str_param(p, "dir").ok_or_else(|| bad(c, "missing dir"))?);
+                let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
+                let dd = (*s.develop_of(id).unwrap_or_default()).clone();
+                let src = s.source_now(id, crate::media::SourceLevel::Full).map_err(|e| bad(c, e))?;
+                let info = s.source_info(id);
+                let a = lightcraft_pipeline::spots::ai_input(&src, &info, &dd, &pts, size, max_edge).ok_or_else(|| bad(c, "the spot is outside the photo"))?;
+                std::fs::create_dir_all(&dir).map_err(|e| bad(c, e.to_string()))?;
+                let (image, mask) = (dir.join("ai-input.rgb"), dir.join("ai-mask.gray"));
+                std::fs::write(&image, &a.rgb8).map_err(|e| bad(c, e.to_string()))?;
+                std::fs::write(&mask, &a.mask).map_err(|e| bad(c, e.to_string()))?;
+                Ok(json!({
+                    "image": image.to_string_lossy(),
+                    "mask": mask.to_string_lossy(),
+                    "width": a.width,
+                    "height": a.height,
+                    "gain": a.gain,
+                    "rect": a.rect,
+                }))
             }
         ),
         cmd!("spot.select", "Select Spot", [], None, "{index|null}", has_active, |s, p| {
@@ -839,6 +886,14 @@ pub fn specs() -> Vec<CommandSpec> {
                 };
                 spots_edit(s, c, "Edit Spot", |spots| {
                     let sp = &mut spots[i];
+                    if let Some(m) = mode
+                        && (m == SpotMode::Ai) != (sp.mode == SpotMode::Ai)
+                    {
+                        return Err(bad(c, "an AI spot is made by spot.add; it can't change to or from another mode"));
+                    }
+                    if sp.mode == SpotMode::Ai && (p.get("source").is_some() || p.get("moveSource").is_some()) {
+                        return Err(bad(c, "an AI spot has no source"));
+                    }
                     if let Some(d) = point(p, "move") {
                         sp.points.iter_mut().for_each(|q| *q = Point::new(q.x + d.x, q.y + d.y));
                         // the source moves along (its offset is relative to the target)
@@ -880,6 +935,9 @@ pub fn specs() -> Vec<CommandSpec> {
                 let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
                 let dd = (*s.develop_of(id).unwrap_or_default()).clone();
                 let spot = dd.spots[i].clone();
+                if spot.mode == SpotMode::Ai {
+                    return Err(bad(c, "an AI spot has no source"));
+                }
                 let next = pick_source(s, id, &dd, &spot, spot.source_offset).ok_or_else(|| bad(c, "no other source fits in the photo"))?;
                 spots_edit(s, c, "Refresh Source", |spots| {
                     spots[i].source_offset = Some(next);
@@ -989,6 +1047,53 @@ fn spots_edit(s: &mut Session, c: &str, label: &str, f: impl FnOnce(&mut Vec<Spo
     let mut d = (*s.develop_of(id).unwrap_or_default()).clone();
     f(&mut d.spots)?;
     s.set_develop(id, d, label)
+}
+
+/// Where AI spot patches are kept: the library's `patches` folder (a temporary one for a library
+/// that isn't on disk).
+pub(crate) fn patches_dir(s: &Session) -> std::path::PathBuf {
+    match &s.library {
+        Some(l) if l.on_disk => l.dir.join("patches"),
+        _ => std::env::temp_dir().join("lightcraft-patches"),
+    }
+}
+
+/// Store an AI spot's fill (`{file, width, height, gain, rect}`: RGB8 rows the model drew over
+/// spot.aiInput's area) as a patch named after its content; the spot's reference to it.
+fn store_patch(s: &Session, p: &Value) -> Result<lightcraft_develop::SpotPatch> {
+    use lightcraft_pipeline::spots::{PATCH_EXT, Patch, add_patch_dir, remember_patch};
+    let c = "spot.add";
+    let file = str_param(p, "file").ok_or_else(|| bad(c, "patch: missing file"))?;
+    let num = |k: &str| p.get(k).and_then(Value::as_f64).filter(|v| v.is_finite());
+    let (w, h) = (num("width").unwrap_or(0.0) as usize, num("height").unwrap_or(0.0) as usize);
+    let gain = num("gain").unwrap_or(1.0) as f32;
+    let rect: Vec<f64> = p.get("rect").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+    let [x0, y0, x1, y1] = <[f64; 4]>::try_from(rect).map_err(|_| bad(c, "patch: rect must be [x0, y0, x1, y1]"))?;
+    if !(x1 > x0 && y1 > y0 && [x0, y0, x1, y1].iter().all(|v| v.is_finite())) {
+        return Err(bad(c, "patch: empty rect"));
+    }
+    let rgb8 = std::fs::read(file).map_err(|e| bad(c, format!("patch: {e}")))?;
+    let bytes = Patch::encode(w, h, gain, &rgb8).ok_or_else(|| bad(c, "patch: size or gain doesn't match the file"))?;
+    let id = {
+        use std::hash::{Hash, Hasher};
+        let mut a = std::collections::hash_map::DefaultHasher::new();
+        bytes.hash(&mut a);
+        let mut b = std::collections::hash_map::DefaultHasher::new();
+        (bytes.len(), "lightcraft-ai-patch", &bytes[bytes.len() / 2..]).hash(&mut b);
+        format!("{:016x}{:016x}", a.finish(), b.finish())
+    };
+    let dir = patches_dir(s);
+    std::fs::create_dir_all(&dir).map_err(|e| bad(c, e.to_string()))?;
+    let path = dir.join(format!("{id}.{PATCH_EXT}"));
+    if !path.exists() {
+        let tmp = dir.join(format!("{id}.{PATCH_EXT}.part"));
+        std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| bad(c, e.to_string()))?;
+    }
+    add_patch_dir(&dir);
+    if let Some(decoded) = Patch::decode(&bytes) {
+        remember_patch(&id, decoded);
+    }
+    Ok(lightcraft_develop::SpotPatch { id, rect: [x0, y0, x1, y1] })
 }
 
 /// An automatic source for `spot` on photo `id` (a small proxy of the photo, framed by `d`).

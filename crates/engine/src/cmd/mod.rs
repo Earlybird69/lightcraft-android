@@ -24,6 +24,8 @@ pub mod library;
 pub mod lut_profiles;
 pub mod manage;
 mod masks;
+#[cfg(test)]
+pub(crate) use masks::patches_dir;
 mod merge;
 pub mod metadata;
 pub mod missing;

@@ -4,3 +4,6 @@
 -keep class * implements com.sun.jna.** { *; }
 -keep class ai.storyteller.lightcraft.core.** { *; }
 -dontwarn java.awt.**
+
+# ONNX Runtime (AI Remove) calls back into its Java classes from native code: keep them.
+-keep class ai.onnxruntime.** { *; }

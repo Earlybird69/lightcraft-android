@@ -5,12 +5,251 @@
 //!   (frequency separation — a fast, stable approximation of gradient-domain healing).
 //! - **Remove** is Heal with an automatically chosen source: candidate offsets on rings around the
 //!   spot are scored by how well the source's surrounding annulus matches the target's.
+//! - **AI** fills from a stored [`Patch`] an inpainting model made (the frontend runs the model on
+//!   [`ai_input`]'s pixels), blended in like a heal so later white balance changes still match.
 
-use lightcraft_develop::{Spot, SpotMode};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, RwLock};
+
+use lightcraft_develop::{DevelopSettings, Spot, SpotMode};
 use lightcraft_geom::Point;
 use lightcraft_raster::Rgb32f;
 
 use crate::geometry::Frame;
+
+// ---------------------------------------------------------------------------------------------
+// AI spots: patches
+
+/// File extension of a stored patch.
+pub const PATCH_EXT: &str = "lcpatch";
+const PATCH_MAGIC: &[u8; 8] = b"LCPATCH1";
+
+/// An AI spot's fill, as the model drew it: 8-bit sRGB-encoded pixels of the spot's rect, made
+/// from linear values multiplied by `gain` (see [`ai_input`]). Decoded to linear on load.
+pub struct Patch {
+    pub width: usize,
+    pub height: usize,
+    pub gain: f32,
+    /// Linear RGB, row by row.
+    pub linear: Vec<[f32; 3]>,
+}
+
+impl Patch {
+    /// The file form: magic, width and height (u32 LE), gain (f32 LE), then RGB8 rows.
+    pub fn encode(width: usize, height: usize, gain: f32, rgb8: &[u8]) -> Option<Vec<u8>> {
+        if width == 0 || height == 0 || rgb8.len() != width * height * 3 || !(gain.is_finite() && gain > 0.0) {
+            return None;
+        }
+        let mut out = Vec::with_capacity(20 + rgb8.len());
+        out.extend_from_slice(PATCH_MAGIC);
+        out.extend_from_slice(&(width as u32).to_le_bytes());
+        out.extend_from_slice(&(height as u32).to_le_bytes());
+        out.extend_from_slice(&gain.to_le_bytes());
+        out.extend_from_slice(rgb8);
+        Some(out)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Patch> {
+        if bytes.len() < 20 || &bytes[..8] != PATCH_MAGIC {
+            return None;
+        }
+        let u = |i: usize| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
+        let (width, height) = (u(8), u(12));
+        let gain = f32::from_le_bytes(bytes[16..20].try_into().unwrap());
+        let data = &bytes[20..];
+        if width == 0 || height == 0 || width.checked_mul(height)?.checked_mul(3)? != data.len() || !(gain.is_finite() && gain > 0.0) {
+            return None;
+        }
+        let lut: Vec<f32> = (0..256).map(|v| lightcraft_color::transfer::srgb_to_linear(v as f32 / 255.0) / gain).collect();
+        let linear = data.chunks_exact(3).map(|c| [lut[c[0] as usize], lut[c[1] as usize], lut[c[2] as usize]]).collect();
+        Some(Patch { width, height, gain, linear })
+    }
+
+    /// Bilinear sample at patch pixel coordinates (centres at +0.5), clamped to the edges.
+    fn sample(&self, x: f32, y: f32) -> [f32; 3] {
+        let fx = (x - 0.5).clamp(0.0, (self.width - 1) as f32);
+        let fy = (y - 0.5).clamp(0.0, (self.height - 1) as f32);
+        let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
+        let (x1, y1) = ((x0 + 1).min(self.width - 1), (y0 + 1).min(self.height - 1));
+        let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
+        let p = |x: usize, y: usize| self.linear[y * self.width + x];
+        let (a, b, c, d) = (p(x0, y0), p(x1, y0), p(x0, y1), p(x1, y1));
+        std::array::from_fn(|i| (a[i] * (1.0 - tx) + b[i] * tx) * (1.0 - ty) + (c[i] * (1.0 - tx) + d[i] * tx) * ty)
+    }
+}
+
+/// Folders patches are read from (the open library's `patches`), newest first.
+static PATCH_DIRS: RwLock<Vec<PathBuf>> = RwLock::new(Vec::new());
+/// The last few patches read, by id.
+static PATCHES: Mutex<Vec<(String, Arc<Patch>)>> = Mutex::new(Vec::new());
+const PATCH_CACHE: usize = 24;
+
+/// Read patches from `dir` too (a library's `patches` folder), ahead of the folders added before.
+pub fn add_patch_dir(dir: &Path) {
+    if let Ok(mut d) = PATCH_DIRS.write() {
+        d.retain(|p| p != dir);
+        d.insert(0, dir.to_path_buf());
+    }
+}
+
+/// A patch id is the name its file was stored under: letters, digits, `-` and `_` only.
+pub fn valid_patch_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Patch `id`, from the cache or the patch folders; None when no folder has it (or it is damaged).
+pub fn patch(id: &str) -> Option<Arc<Patch>> {
+    if !valid_patch_id(id) {
+        return None;
+    }
+    if let Some(hit) = PATCHES.lock().ok().and_then(|c| c.iter().find(|(k, _)| k == id).map(|(_, p)| p.clone())) {
+        return Some(hit);
+    }
+    let dirs = PATCH_DIRS.read().ok()?.clone();
+    let p = dirs.iter().find_map(|d| std::fs::read(d.join(format!("{id}.{PATCH_EXT}"))).ok().and_then(|b| Patch::decode(&b)))?;
+    let p = Arc::new(p);
+    if let Ok(mut c) = PATCHES.lock() {
+        c.push((id.to_string(), p.clone()));
+        let extra = c.len().saturating_sub(PATCH_CACHE);
+        c.drain(..extra);
+    }
+    Some(p)
+}
+
+/// Put a patch in the cache under `id` (the engine, right after storing it).
+pub fn remember_patch(id: &str, p: Patch) {
+    if let Ok(mut c) = PATCHES.lock() {
+        c.retain(|(k, _)| k != id);
+        c.push((id.to_string(), Arc::new(p)));
+        let extra = c.len().saturating_sub(PATCH_CACHE);
+        c.drain(..extra);
+    }
+}
+
+/// What an inpainting model gets for a new AI spot: the pixels around the brushed area, as the
+/// spot stage sees them (white-balanced, earlier spots applied, before exposure and tone), and
+/// which of them to fill.
+pub struct AiInput {
+    /// The area (x0, y0, x1, y1), normalized coordinates of the transformed image.
+    pub rect: [f64; 4],
+    pub width: usize,
+    pub height: usize,
+    /// sRGB-encoded RGB8 rows of `linear × gain` (the model works on ordinary photos).
+    pub rgb8: Vec<u8>,
+    /// 255 where the model fills, 0 elsewhere.
+    pub mask: Vec<u8>,
+    pub gain: f32,
+}
+
+/// Prepare an AI spot over `points` (normalized) with radius `size` (fraction of the long edge):
+/// the brushed area plus surrounding context, at most `max_edge` pixels on its long side, both
+/// sides multiples of 8 (what the model takes). None when the spot has no points or misses the
+/// image.
+pub fn ai_input(src: &Rgb32f, info: &crate::SourceInfo, s: &DevelopSettings, points: &[Point], size: f64, max_edge: usize) -> Option<AiInput> {
+    if points.is_empty() || !(size.is_finite() && size > 0.0) {
+        return None;
+    }
+    // the whole transformed image: no crop, straighten or flips, so pixels and normalized
+    // coordinates differ by a scale only
+    let frame = crate::frame_for(src, info, s, false);
+    let (ow, oh) = (frame.ow, frame.oh);
+    let long = ow.max(oh);
+    let (rx, ry) = (size * long / ow, size * long / oh);
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for p in points {
+        if !(p.x.is_finite() && p.y.is_finite()) {
+            return None;
+        }
+        (x0, y0, x1, y1) = (x0.min(p.x - rx), y0.min(p.y - ry), x1.max(p.x + rx), y1.max(p.y + ry));
+    }
+    // context around the area: a third of its size, and at least 2.5 % of the long edge
+    let m_px = (0.35 * ((x1 - x0) * ow).max((y1 - y0) * oh)).max(0.025 * long);
+    let (mx, my) = (m_px / ow, m_px / oh);
+    let grow = |a: f64, b: f64, m: f64| {
+        let (mut a, mut b) = (a - m, b + m);
+        // near an edge, take the context from the other side instead
+        if a < 0.0 {
+            b -= a;
+            a = 0.0;
+        }
+        if b > 1.0 {
+            a -= b - 1.0;
+            b = 1.0;
+        }
+        (a.max(0.0), b.min(1.0))
+    };
+    let ((x0, x1), (y0, y1)) = (grow(x0, x1, mx), grow(y0, y1, my));
+    if x1 - x0 <= 0.0 || y1 - y0 <= 0.0 {
+        return None;
+    }
+    // the render scale: the area's long side at most max_edge px (never above the source's own)
+    let area_long = ((x1 - x0) * ow).max((y1 - y0) * oh);
+    // (10 px under the cap: rounding out to whole pixels and up to a multiple of 8 adds up to 9)
+    let k = ((max_edge.max(64) - 10) as f64 / area_long).min(1.0);
+    let (fw, fh) = (((ow * k).round() as usize).max(8), ((oh * k).round() as usize).max(8));
+    // the window: the area in output pixels, each side grown (or, at the image's edge, cut) to a multiple of 8
+    let snap = |a: f64, b: f64, full: usize| {
+        let (mut lo, mut hi) = ((a * full as f64).floor() as usize, ((b * full as f64).ceil() as usize).min(full));
+        let len = hi - lo;
+        let want = len.div_ceil(8) * 8;
+        if want <= full {
+            let extra = want - len;
+            let before = (extra / 2).min(lo);
+            lo -= before;
+            hi += extra - before;
+            if hi > full {
+                lo -= hi - full;
+                hi = full;
+            }
+        } else {
+            hi = lo + (len / 8) * 8;
+        }
+        (lo, hi)
+    };
+    let ((wx0, wx1), (wy0, wy1)) = (snap(x0, x1, fw), snap(y0, y1, fh));
+    let (w, h) = (wx1 - wx0, wy1 - wy0);
+    if w < 8 || h < 8 {
+        return None;
+    }
+    let win = crate::PixelWindow { x: wx0, y: wy0, w, h };
+    let req = crate::RenderRequest { apply_crop: false, window: Some(win), quality: crate::Quality::Full, ..crate::RenderRequest::fit(fw, fh) };
+    let plan = crate::plan(src, info, s, &req);
+    let mut img = plan.frame.sample(src, plan.w, plan.h);
+    crate::lin_cpu(&mut img, info, &plan);
+    if let Some(keep) = plan.keep {
+        img = img.crop(keep.x, keep.y, keep.w, keep.h);
+    }
+    if img.width != w || img.height != h {
+        return None;
+    }
+    let rect = [wx0 as f64 / fw as f64, wy0 as f64 / fh as f64, wx1 as f64 / fw as f64, wy1 as f64 / fh as f64];
+    // gain: the area's bright end (99.5th percentile of luminance) lands near 0.85 before encoding
+    let mut lum: Vec<f32> = img.data.iter().map(|c| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]).filter(|v| v.is_finite()).collect();
+    let gain = if lum.is_empty() {
+        1.0
+    } else {
+        let i = ((lum.len() - 1) as f32 * 0.995) as usize;
+        let (_, p, _) = lum.select_nth_unstable_by(i, f32::total_cmp);
+        (0.85 / p.max(1e-4)).clamp(0.05, 64.0)
+    };
+    let enc = |v: f32| (lightcraft_color::transfer::linear_to_srgb((v * gain).clamp(0.0, 1.0)) * 255.0).round() as u8;
+    let rgb8 = img.data.iter().flat_map(|c| c.map(enc)).collect();
+    // the mask: every pixel the spot can touch (within a radius of a point), plus a pixel
+    let (px_x, px_y) = (1.0 / fw as f64, 1.0 / fh as f64);
+    let mut mask = vec![0u8; w * h];
+    for (i, m) in mask.iter_mut().enumerate() {
+        let (x, y) = ((wx0 + i % w) as f64 + 0.5, (wy0 + i / w) as f64 + 0.5);
+        let (nx, ny) = (x * px_x, y * px_y);
+        let near = points.iter().any(|p| {
+            let (dx, dy) = ((nx - p.x) * ow / long, (ny - p.y) * oh / long);
+            (dx * dx + dy * dy).sqrt() <= size + 1.5 / (k * long)
+        });
+        if near {
+            *m = 255;
+        }
+    }
+    Some(AiInput { rect, width: w, height: h, rgb8, mask, gain })
+}
 
 #[inline]
 fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
@@ -253,13 +492,26 @@ pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
             })
             .collect();
         let Some(&first) = pts.first() else { continue };
-        let offset = match spot.source_offset {
-            Some(o) => {
+        // an AI spot reads its stored patch (none to be had: the spot is left out)
+        let ai = if spot.mode == SpotMode::Ai {
+            let Some(sp) = &spot.patch else { continue };
+            let Some(p) = patch(&sp.id) else { continue };
+            let [rx0, ry0, rx1, ry1] = sp.rect;
+            if !(rx1 > rx0 && ry1 > ry0) {
+                continue;
+            }
+            Some((p, sp.rect, frame.out_to_norm(w, h)))
+        } else {
+            None
+        };
+        let offset = match (&ai, spot.source_offset) {
+            (Some(_), _) => (0.0, 0.0),
+            (None, Some(o)) => {
                 let a = to_out.apply(Point::new(0.0, 0.0));
                 let b = to_out.apply(o);
                 ((b.x - a.x) as f32, (b.y - a.y) as f32)
             }
-            None => auto_source(img, first, r),
+            (None, None) => auto_source(img, first, r),
         };
         // Bounding box of the stroke.
         let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
@@ -288,7 +540,15 @@ pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
                 let d = pts.iter().map(|p| ((px - p.0).powi(2) + (py - p.1).powi(2)).sqrt()).fold(f32::MAX, f32::min);
                 let inner = r * (1.0 - feather * 0.8);
                 alpha[y * bw + x] = (1.0 - smooth(inner, r, d)) * opacity;
-                src[y * bw + x] = img.sample_bilinear(px + offset.0, py + offset.1);
+                src[y * bw + x] = match &ai {
+                    Some((p, [rx0, ry0, rx1, ry1], to_norm)) => {
+                        let q = to_norm.apply(Point::new(px as f64, py as f64));
+                        let u = ((q.x - rx0) / (rx1 - rx0) * p.width as f64) as f32;
+                        let v = ((q.y - ry0) / (ry1 - ry0) * p.height as f64) as f32;
+                        p.sample(u, v)
+                    }
+                    None => img.sample_bilinear(px + offset.0, py + offset.1),
+                };
                 tgt[y * bw + x] = img.get(bx0 + x, by0 + y);
             }
         }
@@ -376,6 +636,86 @@ mod tests {
         apply(&mut img, &[spot], &frame, frame.px_per_long(100));
         assert!(img.get(25, 50)[0] > 0.8);
         assert!(img.get(5, 50)[0] < 0.2);
+    }
+
+    // Given a stored patch, decoding it gives back linear values (sRGB decoded, gain undone)
+    #[test]
+    fn a_patch_round_trips_through_its_file_form() {
+        let rgb8: Vec<u8> = (0..4 * 2).flat_map(|i| [i as u8 * 30, 128, 255]).collect();
+        let bytes = Patch::encode(4, 2, 2.0, &rgb8).unwrap();
+        let p = Patch::decode(&bytes).unwrap();
+        assert_eq!((p.width, p.height, p.gain), (4, 2, 2.0));
+        let want = lightcraft_color::transfer::srgb_to_linear(128.0 / 255.0) / 2.0;
+        assert!((p.linear[3][1] - want).abs() < 1e-6);
+        assert!((p.linear[0][2] - 0.5).abs() < 1e-6);
+        // damaged or mismatched files are refused
+        assert!(Patch::decode(&bytes[..bytes.len() - 1]).is_none());
+        assert!(Patch::decode(b"LCPATCH0aaaaaaaaaaaa").is_none());
+        assert!(Patch::encode(4, 2, 0.0, &rgb8).is_none());
+        assert!(Patch::encode(3, 2, 1.0, &rgb8).is_none());
+        assert!(!valid_patch_id("../escape") && !valid_patch_id("") && valid_patch_id("a1-b_2"));
+    }
+
+    // Given an AI spot over a black dot and a patch of the surrounding grey, the dot is gone; with
+    // its patch missing, the spot leaves the image as it was
+    #[test]
+    fn an_ai_spot_fills_from_its_patch() {
+        use lightcraft_develop::SpotPatch;
+        let grey = 0.2f32;
+        let mut img = Rgb32f::from_fn(120, 80, |_, _| [grey; 3]);
+        for y in 36..44 {
+            for x in 56..64 {
+                img.set(x, y, [0.0; 3]);
+            }
+        }
+        let before = img.clone();
+        // a 16 × 16 patch covering normalized (0.4, 0.3)–(0.6, 0.7), all grey (gain 1)
+        let v = (lightcraft_color::transfer::linear_to_srgb(grey) * 255.0).round() as u8;
+        let p = Patch::decode(&Patch::encode(16, 16, 1.0, &vec![v; 16 * 16 * 3]).unwrap()).unwrap();
+        remember_patch("test-ai-fill", p);
+        let frame = Frame::new(120, 80, &DevelopSettings::default(), true);
+        let spot = |id: &str| Spot {
+            mode: SpotMode::Ai,
+            points: vec![Point::new(0.5, 0.5)],
+            size: 8.0 / 120.0,
+            feather: 30.0,
+            source_offset: Some(Point::new(0.0, 0.0)),
+            patch: Some(SpotPatch { id: id.into(), rect: [0.4, 0.3, 0.6, 0.7] }),
+            ..Default::default()
+        };
+        apply(&mut img, &[spot("test-ai-fill")], &frame, frame.px_per_long(120));
+        let c = img.get(60, 40);
+        assert!((c[0] - grey).abs() < 0.02, "{c:?}");
+        let mut untouched = before.clone();
+        apply(&mut untouched, &[spot("test-no-such-patch")], &frame, frame.px_per_long(120));
+        assert_eq!(untouched.data, before.data);
+    }
+
+    // Given a brushed spot, the model's input holds the spot plus context, sides multiples of 8,
+    // the mask covering the spot and not the far corners
+    #[test]
+    fn ai_input_frames_the_spot_for_the_model() {
+        let src = Rgb32f::from_fn(400, 300, |x, y| [x as f32 / 400.0, y as f32 / 300.0, 0.3]);
+        let s = DevelopSettings::default();
+        let pts = [Point::new(0.5, 0.5), Point::new(0.55, 0.5)];
+        let a = ai_input(&src, &crate::SourceInfo::default(), &s, &pts, 0.02, 768).unwrap();
+        assert_eq!((a.width % 8, a.height % 8), (0, 0));
+        assert_eq!(a.rgb8.len(), a.width * a.height * 3);
+        assert_eq!(a.mask.len(), a.width * a.height);
+        let [x0, y0, x1, y1] = a.rect;
+        assert!(x0 < 0.5 - 0.02 && x1 > 0.55 + 0.02 && y0 < 0.5 - 0.03 && y1 > 0.5 + 0.03, "{:?}", a.rect);
+        // the pixel under the first point is masked; the window's corner is not
+        let at = |nx: f64, ny: f64| {
+            let (x, y) = (((nx - x0) / (x1 - x0) * a.width as f64) as usize, ((ny - y0) / (y1 - y0) * a.height as f64) as usize);
+            a.mask[y.min(a.height - 1) * a.width + x.min(a.width - 1)]
+        };
+        assert_eq!(at(0.5, 0.5), 255);
+        assert_eq!(a.mask[0], 0);
+        // a small spot is drawn at the source's own resolution; a capped one is scaled down
+        assert!(a.width <= 400 && a.height <= 300);
+        let big = ai_input(&src, &crate::SourceInfo::default(), &s, &pts, 0.2, 64).unwrap();
+        assert!(big.width.max(big.height) <= 64, "{}x{}", big.width, big.height);
+        assert!(ai_input(&src, &crate::SourceInfo::default(), &s, &[], 0.02, 768).is_none());
     }
 
     fn with_spots(spots: Vec<Spot>) -> DevelopSettings {

@@ -890,6 +890,18 @@ pub enum SpotMode {
     Remove,
     Heal,
     Clone,
+    /// Filled by an inpainting model: the fill is a stored patch ([`Spot::patch`]), blended in like
+    /// a heal (tone matched to the spot's surroundings).
+    Ai,
+}
+
+/// An AI spot's fill: a patch file the frontend made (see `lightcraft_pipeline::spots::Patch`),
+/// covering `rect` (x0, y0, x1, y1 in normalized coordinates of the transformed image).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpotPatch {
+    /// The patch file's name in the library's `patches` folder (without extension).
+    pub id: String,
+    pub rect: [f64; 4],
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -904,11 +916,14 @@ pub struct Spot {
     pub opacity: f64,
     /// Source offset (normalized) from the target; None = auto (content-aware remove).
     pub source_offset: Option<Point>,
+    /// An [`SpotMode::Ai`] spot's fill.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patch: Option<SpotPatch>,
 }
 
 impl Default for Spot {
     fn default() -> Self {
-        Self { mode: SpotMode::Remove, points: Vec::new(), size: 0.02, feather: 50.0, opacity: 100.0, source_offset: None }
+        Self { mode: SpotMode::Remove, points: Vec::new(), size: 0.02, feather: 50.0, opacity: 100.0, source_offset: None, patch: None }
     }
 }
 

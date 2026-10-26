@@ -389,6 +389,8 @@ impl Session {
         self.media.clear_sources();
         if on_disk {
             self.media.attach_disk_cache(&dir.join("thumbs"), self.cache_bytes());
+            // AI spots' fills
+            lightcraft_pipeline::spots::add_patch_dir(&dir.join("patches"));
         }
         let view_written = self.view_json();
         self.library = Some(Library {

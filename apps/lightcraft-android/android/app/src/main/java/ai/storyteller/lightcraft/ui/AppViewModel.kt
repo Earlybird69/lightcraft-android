@@ -23,6 +23,7 @@ import ai.storyteller.lightcraft.core.ToneCurveInfo
 import ai.storyteller.lightcraft.core.ViewGeometry
 import ai.storyteller.lightcraft.core.engineVersion
 import ai.storyteller.lightcraft.core.whiteBalanceModes
+import ai.storyteller.lightcraft.engine.AiRemove
 import ai.storyteller.lightcraft.engine.DeviceAccess
 import ai.storyteller.lightcraft.engine.DeviceMedia
 import ai.storyteller.lightcraft.engine.DevicePhoto
@@ -1978,6 +1979,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun closeEditor() {
         val ed = editor ?: return
         editor = null
+        // the AI model holds a few hundred MB while loaded
+        if (!aiWorking) viewModelScope.launch(Dispatchers.Default) { runCatching { ai.release() } }
         val e = engine ?: return
         viewModelScope.launch {
             runCatching {
@@ -2984,6 +2987,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun addSpot(points: List<Pair<Double, Double>>) {
         val ed = editor ?: return
         if (points.isEmpty()) return
+        if (ed.removeMode == "ai") return addAiSpot(points)
         val params = JSONObject()
             .put("mode", ed.removeMode)
             .put("points", JSONArray(points.map { (x, y) -> JSONArray().put(x).put(y) }))
@@ -3036,11 +3040,103 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setRemoveMode(mode: String) {
         val ed = editor ?: return
         val i = ed.selectedSpot
-        if (i == null) {
+        // AI spots are made by brushing in AI mode: picking AI (or another way for an AI spot)
+        // lets go of the picked spot and sets the brush instead
+        val picked = i?.let { ed.spots.getOrNull(it) }
+        if (i != null && (mode == "ai" || picked?.mode == "ai")) {
+            ed.selectedSpot = null
+            engine?.let { e -> viewModelScope.launch { runCatching { e.command { execute("spot.select", JSONObject().put("index", JSONObject.NULL).toString()) } } } }
+        }
+        if (i == null || mode == "ai" || picked?.mode == "ai") {
             ed.removeMode = mode
             return
         }
         edit(after = { refreshSpots() }) { it.execute("spot.update", JSONObject().put("index", i).put("mode", mode).toString()) }
+    }
+
+    // ------------------------------------------------------------------ AI Remove (LISTD)
+
+    private val ai by lazy { AiRemove(getApplication()) }
+
+    /** AI Remove is filling a spot (its button waits; a bar shows on the panel). */
+    var aiWorking by mutableStateOf(false)
+        private set
+
+    /** The model's download: bytes so far and in all (−1: unknown), or null when not downloading. */
+    var aiDownload by mutableStateOf<Pair<Long, Long>?>(null)
+        private set
+
+    /** Asking whether to download the model (a stroke waits in [pendingAi]). */
+    var askAiDownload by mutableStateOf(false)
+        private set
+    private var pendingAi: List<Pair<Double, Double>>? = null
+
+    val aiDownloadMb: Int get() = AiRemove.SIZE_MB
+
+    /** Brushed in AI mode: the engine frames the area, the model fills it, the fill becomes an AI spot (one step). */
+    private fun addAiSpot(points: List<Pair<Double, Double>>) {
+        val ed = editor ?: return
+        val e = engine ?: return
+        if (aiWorking || aiDownload != null) return
+        if (!ai.ready) {
+            pendingAi = points
+            askAiDownload = true
+            return
+        }
+        aiWorking = true
+        val pts = JSONArray(points.map { (x, y) -> JSONArray().put(x).put(y) })
+        val size = ed.brushSize.toDouble()
+        viewModelScope.launch {
+            val patch = runCatching {
+                val dir = File(getApplication<Application>().cacheDir, "ai").apply { mkdirs() }
+                val ask = JSONObject().put("points", pts).put("size", size).put("maxEdge", 768).put("dir", dir.absolutePath)
+                val input = JSONObject(e.command { execute("spot.aiInput", ask.toString()) })
+                val (w, h) = input.getInt("width") to input.getInt("height")
+                val out = File(dir, "ai-output.rgb")
+                withContext(Dispatchers.Default) { ai.fill(File(input.getString("image")), File(input.getString("mask")), w, h, out) }
+                JSONObject().put("file", out.absolutePath).put("width", w).put("height", h).put("gain", input.getDouble("gain")).put("rect", input.getJSONArray("rect"))
+            }
+            aiWorking = false
+            patch
+                .onSuccess { p ->
+                    if (editor !== ed) return@onSuccess
+                    val params = JSONObject()
+                        .put("mode", "ai")
+                        .put("points", pts)
+                        .put("size", size)
+                        .put("feather", ed.brushFeather.toDouble())
+                        .put("opacity", ed.brushOpacity.toDouble())
+                        .put("patch", p)
+                    edit(after = { refreshSpots() }) { it.execute("spot.add", params.toString()) }
+                }
+                .onFailure { say("AI Remove didn't work: ${it.message ?: it.javaClass.simpleName}") }
+        }
+    }
+
+    /** The download question's answer: download the model (then fill the stroke that asked), or not. */
+    fun answerAiDownload(download: Boolean) {
+        askAiDownload = false
+        if (!download) {
+            pendingAi = null
+            return
+        }
+        if (aiDownload != null) return
+        aiDownload = 0L to -1L
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    ai.download { got, total -> viewModelScope.launch(Dispatchers.Main) { if (aiDownload != null) aiDownload = got to total } }
+                }
+            }
+            aiDownload = null
+            result
+                .onSuccess {
+                    say("AI Remove is ready")
+                    pendingAi?.let { if (editor?.removeMode == "ai") addAiSpot(it) }
+                }
+                .onFailure { say("AI Remove's download stopped: ${it.message ?: it.javaClass.simpleName}") }
+            pendingAi = null
+        }
     }
 
     /** Read Guided Upright's guides again (after a change, on opening Geometry). */

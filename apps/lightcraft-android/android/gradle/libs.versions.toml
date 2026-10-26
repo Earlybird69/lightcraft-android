@@ -8,6 +8,8 @@ activityCompose = "1.11.0"
 kotlinxCoroutines = "1.10.2"
 # UniFFI's Kotlin bindings call the Rust library through JNA (Apache-2.0)
 jna = "5.19.1"
+# AI Remove (LISTD build): runs the LaMa inpainting model on the phone (MIT)
+onnxruntime = "1.22.0"
 junit = "4.13.2"
 
 [libraries]
@@ -21,6 +23,7 @@ androidx-compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graph
 androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "kotlinxCoroutines" }
 jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
+onnxruntime-android = { group = "com.microsoft.onnxruntime", name = "onnxruntime-android", version.ref = "onnxruntime" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]

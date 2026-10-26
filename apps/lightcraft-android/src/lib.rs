@@ -187,7 +187,7 @@ pub struct ViewGeometry {
 /// A Remove spot: where it is and how it was made.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct SpotInfo {
-    /// `remove`, `heal` or `clone`.
+    /// `remove`, `heal`, `clone` or `ai`.
     pub mode: String,
     /// The spot: one point, or the path brushed over it (x then y, the photo's 0–1).
     pub points: Vec<f64>,
@@ -1176,7 +1176,8 @@ impl MobileSession {
                 size: sp.size,
                 feather: sp.feather,
                 opacity: sp.opacity,
-                source: sp.source_offset.map(|o| vec![o.x, o.y]),
+                // an AI spot fills from its own patch: no source to show or move
+                source: sp.source_offset.filter(|_| sp.patch.is_none()).map(|o| vec![o.x, o.y]),
             })
             .collect()
     }

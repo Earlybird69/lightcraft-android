@@ -25,7 +25,10 @@ import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -273,13 +276,21 @@ fun SpotMenuSheet(vm: AppViewModel, ed: EditorState, onDismiss: () -> Unit) {
     val spot = ed.selectedSpot?.let { ed.spots.getOrNull(it) }
     LcSheet(onDismiss, background = spotMenuColor) {
         Spacer(Modifier.height(8.dp))
-        removeModes.forEach { (id, label, icon) ->
+        // an AI spot stays one (its fill is the model's); the others switch among themselves
+        val isAi = spot?.mode == "ai"
+        removeModes.filter { (id) -> (id == "ai") == isAi }.forEach { (id, label, icon) ->
             SpotMenuRow(icon, label, checked = spot?.mode == id) {
                 onDismiss()
                 vm.setRemoveMode(id)
             }
         }
-        if (spot != null && spot.mode != "remove") {
+        if (isAi) {
+            SpotMenuRow(LcIcon.Trash, "Delete") {
+                onDismiss()
+                vm.deleteSpot()
+            }
+        }
+        if (spot != null && spot.mode != "remove" && !isAi) {
             SpotMenuRow(MdIcon.RotateRight, "New source") {
                 onDismiss()
                 vm.newSpotSource()
@@ -305,7 +316,13 @@ private fun SpotMenuRow(icon: Glyph, label: String, checked: Boolean = false, on
 private val spotMenuText = Color(0xFFEBEBEB)
 
 /** How Remove takes things away: its name and icon. */
-private val removeModes = listOf<Triple<String, String, Glyph>>(Triple("remove", "Remove", LcIcon.Heal), Triple("heal", "Heal", MdIcon.Healing), Triple("clone", "Clone", LcIcon.Clone))
+private val removeModes = listOf<Triple<String, String, Glyph>>(
+    Triple("remove", "Remove", LcIcon.Heal),
+    Triple("heal", "Heal", MdIcon.Healing),
+    Triple("clone", "Clone", LcIcon.Clone),
+    // LISTD build: the LaMa model fills what's brushed (on the phone, after a one-time download)
+    Triple("ai", "AI", MdIcon.AutoFixHigh),
+)
 
 /**
  * Remove's panel, as the reference's: the way it takes things away (a 40 dp blue button, its name
@@ -374,9 +391,10 @@ fun RemoveSheet(vm: AppViewModel, ed: EditorState, modifier: Modifier) {
                     }
                 }
             }
+            item(key = "ai") { AiStatus(vm, mode) }
             item(key = "buttons") {
                 // the reference puts Refine on its sheet's last row, 140 dp down (its 184 dp sheet)
-                Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 68.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = if (mode == "ai" || vm.aiWorking || vm.aiDownload != null) 20.dp else 68.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.weight(1f))
                     // as the reference's: faint until there is a spot to refine
                     PanelButton("Refine", LcIcon.Pencil, enabled = ed.spots.isNotEmpty()) { refine = true }
@@ -457,3 +475,53 @@ private fun RemoveModeButton(mode: String, pill: Boolean = false, modifier: Modi
 private val modeMenu = Color(0xFF232323)
 private val modeMenuEdge = Color(0xFF494949)
 private val modeMenuText = Color(0xFFA2A2A2)
+
+/**
+ * AI Remove's line on the panel (LISTD build): what brushing does in AI mode, the model's download
+ * (with its progress), a fill in progress; and the question before the one-time download.
+ */
+@Composable
+private fun AiStatus(vm: AppViewModel, mode: String) {
+    val download = vm.aiDownload
+    val text = when {
+        download != null -> {
+            val (got, total) = download
+            val mb = got / 1_000_000
+            if (total > 0) "Downloading the AI model… $mb of ${total / 1_000_000} MB" else "Downloading the AI model… $mb MB"
+        }
+        vm.aiWorking -> "Removing with AI…"
+        mode == "ai" -> "Brush over what to remove. AI fills it in on the phone."
+        else -> null
+    }
+    if (text != null) {
+        Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 24.dp)) {
+            Text(text, color = Lc.panelText, fontFamily = Inter, fontSize = 13.sp)
+            if (download != null || vm.aiWorking) {
+                val fraction = download?.let { (got, total) -> if (total > 0) (got.toFloat() / total).coerceIn(0f, 1f) else null }
+                Spacer(Modifier.height(8.dp))
+                if (fraction != null) {
+                    LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth(), color = Lc.primaryBlue, trackColor = modeMenuEdge)
+                } else {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Lc.primaryBlue, trackColor = modeMenuEdge)
+                }
+            }
+        }
+    }
+    if (vm.askAiDownload) {
+        AlertDialog(
+            onDismissRequest = { vm.answerAiDownload(false) },
+            containerColor = Lc.dialog,
+            shape = RoundedCornerShape(5.dp),
+            title = { Text("Download AI Remove?", fontFamily = Inter, color = Lc.text) },
+            text = {
+                Text(
+                    "AI Remove needs its model on the phone: a one-time ${vm.aiDownloadMb} MB download, best on Wi-Fi. After that it works offline.",
+                    fontFamily = Inter,
+                    color = Lc.text,
+                )
+            },
+            confirmButton = { TextButton(onClick = { vm.answerAiDownload(true) }) { Text("Download", fontFamily = Inter, color = Lc.selected) } },
+            dismissButton = { TextButton(onClick = { vm.answerAiDownload(false) }) { Text("Not now", fontFamily = Inter, color = Lc.text) } },
+        )
+    }
+}

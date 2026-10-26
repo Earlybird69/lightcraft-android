@@ -55,3 +55,54 @@ fn spots_select_move_edit_refresh_and_delete() {
     s.execute("library.next", &json!({})).unwrap();
     assert_eq!(s.active_spot, None);
 }
+
+// Given a brushed area, aiInput writes the model's input; the model's fill (here, the input itself
+// with the masked pixels painted flat) is stored as a patch by an AI spot, which renders, and which
+// can't change mode or take a source
+#[test]
+fn ai_spots_store_the_models_fill_and_render_it() {
+    let mut s = Session::with_demo();
+    let dir = std::env::temp_dir().join(format!("lightcraft-ai-test-{}", std::process::id()));
+    let pts = json!([[0.45, 0.5], [0.5, 0.5]]);
+    let a = s.execute("spot.aiInput", &json!({"points": pts, "size": 0.03, "maxEdge": 256, "dir": dir.to_string_lossy()})).unwrap();
+    let (w, h) = (a["width"].as_u64().unwrap() as usize, a["height"].as_u64().unwrap() as usize);
+    assert!(w % 8 == 0 && h % 8 == 0 && w.max(h) <= 256, "{a}");
+    let mut rgb = std::fs::read(a["image"].as_str().unwrap()).unwrap();
+    let mask = std::fs::read(a["mask"].as_str().unwrap()).unwrap();
+    assert_eq!((rgb.len(), mask.len()), (w * h * 3, w * h));
+    assert!(mask.iter().any(|m| *m == 255) && mask.iter().any(|m| *m == 0));
+    for (i, m) in mask.iter().enumerate() {
+        if *m == 255 {
+            rgb[i * 3..i * 3 + 3].copy_from_slice(&[120, 120, 120]);
+        }
+    }
+    let fill = dir.join("ai-output.rgb");
+    std::fs::write(&fill, &rgb).unwrap();
+    let patch = json!({"file": fill.to_string_lossy(), "width": w, "height": h, "gain": a["gain"], "rect": a["rect"]});
+    // nothing changed yet; an AI spot without its patch is refused
+    assert!(spots(&s).is_empty());
+    let id0 = s.active().unwrap();
+    let plain = s.render_now(id0, 320, 240).unwrap().image;
+    assert!(s.execute("spot.add", &json!({"mode": "ai", "points": pts, "size": 0.03})).is_err());
+    let r = s.execute("spot.add", &json!({"mode": "ai", "points": pts, "size": 0.03, "patch": patch})).unwrap();
+    assert_eq!(r["index"], 0);
+    let sp = &spots(&s)[0];
+    assert_eq!(sp.mode, lightcraft_develop::SpotMode::Ai);
+    let id = sp.patch.as_ref().unwrap().id.clone();
+    assert!(crate::cmd::patches_dir(&s).join(format!("{id}.lcpatch")).exists());
+    assert!(lightcraft_pipeline::spots::patch(&id).is_some());
+    // it renders: the photo changes under the spot, and only there (the top-left corner is as it was)
+    let filled = s.render_now(id0, 320, 240).unwrap().image;
+    assert_eq!((filled.width, filled.height), (plain.width, plain.height));
+    assert_ne!(filled.data, plain.data);
+    let corner = |i: &lightcraft_raster::Rgba8| i.data[..i.width * 10].to_vec();
+    assert_eq!(corner(&filled), corner(&plain));
+    assert!(s.execute("spot.update", &json!({"size": 0.04})).is_ok());
+    assert!(s.execute("spot.update", &json!({"mode": "heal"})).is_err());
+    assert!(s.execute("spot.update", &json!({"moveSource": [0.01, 0.0]})).is_err());
+    assert!(s.execute("spot.refreshSource", &json!({})).is_err());
+    // a plain spot can't become an AI one
+    s.execute("spot.add", &json!({"points": [[0.2, 0.2]], "source": [0.05, 0.0]})).unwrap();
+    assert!(s.execute("spot.update", &json!({"mode": "ai"})).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
